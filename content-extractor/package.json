@@ -1,0 +1,36 @@
+{
+  "name": "content-extractor",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "test:unit": "tsx scripts/verify-ingest.mts && tsx scripts/verify-banding.mts && tsx scripts/verify-narration.mts",
+    "mock:vision": "node scripts/mock-openai-vision.mjs",
+    "test:e2e": "tsx scripts/e2e-storyboard.mts"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.18",
+    "next": "16.2.10",
+    "openai": "^6.45.0",
+    "p-limit": "^7.3.0",
+    "pdf-to-img": "^6.2.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "sharp": "^0.35.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/adm-zip": "^0.5.8",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.10",
+    "tailwindcss": "^4",
+    "tsx": "^4.23.0",
+    "typescript": "^5"
+  }
+}
