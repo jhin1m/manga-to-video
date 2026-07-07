@@ -1,4 +1,4 @@
-// Verify banding: smart-split (port SmartStitch) + stitch + classify + PDF expand.
+// Verify banding: smart-split (port SmartStitch) + stitch + ingest band + PDF expand.
 // Kỳ vọng smart-split tính tay từ thuật toán gốc (lib.rs) — cùng settings, cùng ảnh
 // tổng hợp thì hành vi phải khớp từng pixel.
 import sharp from 'sharp';
@@ -10,8 +10,7 @@ import {
   type SplitSettings,
 } from '../lib/smart-split';
 import { stitchSlices } from '../lib/stitch';
-import { classifySource } from '../lib/source-kind';
-import { expandPdfs } from '../lib/pipeline';
+import { expandPdfs, ingestBandItems } from '../lib/pipeline';
 
 let failures = 0;
 function assertEq(actual: unknown, expected: unknown, label: string) {
@@ -164,16 +163,36 @@ console.log('Test 5: stitch 3 slice khác bề rộng');
   assertEq(px(200, 1300), 240, 'slice 3 tại (200,1300)');
 }
 
-// ---- Test 6: classifySource ----
-console.log('Test 6: phân loại nguồn');
+// ---- Test 6: ingestBandItems — upload gộp ảnh dài rồi chia lại thành band ----
+console.log('Test 6: ingestBandItems — 3 trang 600×900 → canvas 2700 → 2 band (SPLIT_HEIGHT 1600)');
 {
-  assertEq(classifySource([{ width: 800, height: 1100 }, { width: 800, height: 1200 }], 2.5), 'pages', 'manga trang rời → pages');
-  assertEq(
-    classifySource([{ width: 800, height: 12000 }, { width: 800, height: 900 }, { width: 720, height: 20000 }], 2.5),
-    'strip',
-    'đa số dải dọc → strip',
+  const page = (c: number) =>
+    sharp({ create: { width: 600, height: 900, channels: 3, background: { r: c, g: c, b: c } } })
+      .png()
+      .toBuffer();
+  const items = await ingestBandItems(
+    [
+      { filename: '1.png', buffer: await page(100) },
+      { filename: '2.png', buffer: await page(150) },
+      { filename: '3.png', buffer: await page(200) },
+    ],
+    1568,
   );
-  assertEq(classifySource([], 2.5), 'pages', 'rỗng → pages (mặc định an toàn)');
+  // Trang trơn → mọi hàng đều safe → cắt đúng target 1600; canvas 600×2700 → 2 band.
+  assertEq(items.map((it) => it.filename), ['band-1.jpg', 'band-2.jpg'], 'tên band đánh số theo thứ tự');
+  assertEq(
+    items.map((it) => ({ w: it.width, h: it.height, mime: it.mime })),
+    [
+      { w: 600, h: 1600, mime: 'image/jpeg' },
+      { w: 600, h: 1100, mime: 'image/jpeg' },
+    ],
+    'band phủ kín canvas: 1600 + 1100 = 2700',
+  );
+  const metas = await Promise.all(items.map((it) => sharp(it.buffer).metadata()));
+  assertOk(
+    metas.every((m, i) => m.width === items[i].width && m.height === items[i].height),
+    'buffer band decode đúng kích thước khai báo',
+  );
 }
 
 // ---- Test 7: PDF expand vào pipeline ----

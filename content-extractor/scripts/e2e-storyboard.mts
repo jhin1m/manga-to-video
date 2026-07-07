@@ -1,11 +1,12 @@
-// E2E Stage 1.5 qua dev server + mock OpenAI vision (không tốn API thật).
+// E2E Stage 1 + 1.5 qua dev server + mock OpenAI vision (không tốn API thật).
 // Cách chạy (Node 24):
 //   1. node scripts/mock-openai-vision.mjs                      # mock vision :3106
 //   2. PORT=3105 OPENAI_API_KEY=mock-key OPENAI_BASE_URL=http://localhost:3106/v1 \
 //      VISION_MODEL=mock-vision VISION_RPM=600 SPLIT_HEIGHT=1000 npm run dev
 //   3. npx tsx scripts/e2e-storyboard.mts                       # (E2E_BASE đổi được)
-// Phủ: pages (manga) + cô lập lỗi beat + sửa tay + split/merge/reorder + export;
-// strip (webtoon) stitch + smart-split + 2A + retry + import; PDF vào pipeline.
+// Phủ: upload gộp ảnh dài + chia band + cô lập lỗi Stage 1 + storyboard 1 beat/band +
+// sửa tay + Generate (vision) + reorder + export; smart-split né bubble ngay lúc upload;
+// import từ manifest; PDF vào pipeline; split/merge đã gỡ (404).
 import sharp from 'sharp';
 
 const BASE = process.env.E2E_BASE ?? 'http://localhost:3105';
@@ -107,23 +108,34 @@ function buildPdf(): Buffer {
 
 const MOCK_NARRATION = 'Cảnh mock.\n"Thoại mock."';
 
-// ============ A. PAGES (manga trang rời) ============
-console.log('A. Pages: upload 3 trang → Stage 1 (1 lỗi mock) → storyboard → edit → export');
+// Đọc kích thước ảnh item qua API (ItemDTO không mang dims).
+async function itemDims(imageUrl: string): Promise<{ w: number; h: number }> {
+  const res = await fetch(`${BASE}${imageUrl}`);
+  if (!res.ok) throw new Error(`${imageUrl} → HTTP ${res.status}`);
+  const m = await sharp(Buffer.from(await res.arrayBuffer())).metadata();
+  return { w: m.width!, h: m.height! };
+}
+
+// ============ A. UPLOAD GỘP + CHIA BAND → STAGE 1 → STORYBOARD ============
+console.log('A. Upload 3 trang → gộp canvas 2700 → 3 band (SPLIT_HEIGHT=1000) → Stage 1 (band đen lỗi mock) → storyboard → edit → Generate → export');
 {
   const fd = new FormData();
-  fd.append('images', toBlob(await solidJpeg(600, 900, 100), 'image/jpeg'), '1.jpg');
-  // 601px = marker cho mock LUÔN trả 500 → trang này lỗi thật (qua hết withRetry)
-  fd.append('images', toBlob(await solidJpeg(601, 900, 150), 'image/jpeg'), '2.jpg');
-  fd.append('images', toBlob(await solidJpeg(600, 900, 200), 'image/jpeg'), '10.jpg');
+  fd.append('images', toBlob(await solidJpeg(600, 1000, 100), 'image/jpeg'), '1.jpg');
+  // Trang đen tuyền → band giữa gần đen (marker mock LUÔN trả 500) → lỗi thật qua hết withRetry
+  fd.append('images', toBlob(await solidJpeg(600, 1000, 0), 'image/jpeg'), '2.jpg');
+  fd.append('images', toBlob(await solidJpeg(600, 700, 200), 'image/jpeg'), '10.jpg');
   const job = await api<any>('/api/jobs', { method: 'POST', body: fd });
-  eq(job.items.length, 3, 'job 3 trang');
+  // Trang trơn → mọi hàng safe → cắt đúng target 1000/2000: band [1000, 1000, 700].
+  eq(job.items.length, 3, 'gộp 2700px → 3 band');
   eq(
     job.items.map((it: any) => it.filename),
-    ['1.jpg', '2.jpg', '10.jpg'],
-    'natural sort 1,2,10',
+    ['band-1.jpg', 'band-2.jpg', 'band-3.jpg'],
+    'item là band đánh số thứ tự',
   );
+  const dims = await Promise.all(job.items.map((it: any) => itemDims(it.imageUrl)));
+  eq(dims, [{ w: 600, h: 1000 }, { w: 600, h: 1000 }, { w: 600, h: 700 }], 'kích thước band khớp tính tay');
 
-  // Stage 1 với mock (trang 2.jpg marker → lỗi vision bền qua retry)
+  // Stage 1 với mock (band 2 đen tuyền → lỗi vision bền qua retry)
   await api<any>(`/api/jobs/${job.jobId}/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -131,24 +143,20 @@ console.log('A. Pages: upload 3 trang → Stage 1 (1 lỗi mock) → storyboard 
   });
   const doneJob = await pollJob(job.jobId, 120000);
   const errored = doneJob.items.filter((it: any) => it.error);
-  eq(errored.length, 1, 'đúng 1 trang lỗi vision (marker)');
-  eq(errored[0]?.filename, '2.jpg', 'trang lỗi là 2.jpg');
+  eq(errored.length, 1, 'đúng 1 band lỗi vision (marker đen)');
+  eq(errored[0]?.filename, 'band-2.jpg', 'band lỗi là band-2.jpg');
 
-  // Storyboard pages
-  await api<any>(`/api/jobs/${job.jobId}/storyboard`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sourceKind: 'pages' }),
-  });
+  // Storyboard: 1 band = 1 nhịp, narration pre-fill từ content Stage 1
+  await api<any>(`/api/jobs/${job.jobId}/storyboard`, { method: 'POST' });
   const sb = await pollStoryboard(job.jobId);
   eq(sb.progress.phase, 'done', 'compose xong');
-  eq(sb.sourceKind, 'pages', 'sourceKind pages');
-  eq(sb.beats.length, 3, 'mỗi trang 1 nhịp');
-  ok(sb.beats.every((b: any) => b.region === null), 'region null (cả trang)');
+  eq(sb.sourceKind, 'pages', 'sourceKind pages (band)');
+  eq(sb.beats.length, 3, 'mỗi band 1 nhịp');
+  ok(sb.beats.every((b: any) => b.region === null), 'region null (trọn band)');
   const goodBeats = sb.beats.filter((b: any) => !b.error);
   const errBeats = sb.beats.filter((b: any) => b.error);
   eq(goodBeats.length, 2, '2 nhịp có narration');
-  eq(errBeats.length, 1, '1 nhịp lỗi (trang thiếu content) — job không sập');
+  eq(errBeats.length, 1, '1 nhịp lỗi (band thiếu content) — job không sập');
   ok(
     goodBeats.every((b: any) => b.narration === MOCK_NARRATION),
     'narration = template mô tả + thoại',
@@ -175,7 +183,7 @@ console.log('A. Pages: upload 3 trang → Stage 1 (1 lỗi mock) → storyboard 
     body: JSON.stringify({ narration: 'Lời đọc mới dài hơn một chút.', region: { x: 0, y: 100, w: 600, h: 400 } }),
   });
   eq(edited.region, { x: 0, y: 100, w: 600, h: 400 }, 'PATCH region hợp lệ');
-  // Region vượt biên → 400
+  // Region vượt biên band (600×1000) → 400
   const bad = await fetch(`${BASE}/api/jobs/${job.jobId}/storyboard/beats/${b0.id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -190,33 +198,35 @@ console.log('A. Pages: upload 3 trang → Stage 1 (1 lỗi mock) → storyboard 
   const cropMeta = await sharp(Buffer.from(await crop.arrayBuffer())).metadata();
   eq({ w: cropMeta.width, h: cropMeta.height }, { w: 600, h: 400 }, 'crop đúng kích thước region');
 
-  // Split → 4 nhịp; merge lại → 3; reorder
-  const afterSplit = await api<any>(`/api/jobs/${job.jobId}/storyboard/beats/split`, {
+  // Generate (vision) ghi đè bản sửa tay khi người dùng chủ động bấm
+  const generated = await api<any>(
+    `/api/jobs/${job.jobId}/storyboard/beats/${b0.id}/generate`,
+    { method: 'POST' },
+  );
+  eq(generated.narration, MOCK_NARRATION, 'Generate → narration từ vision');
+  // Generate trên band đen → mock luôn 500 → lỗi cô lập vào beat, không văng HTTP
+  const black = sb.beats.find((b: any) => b.order === 1)!;
+  const genErr = await api<any>(
+    `/api/jobs/${job.jobId}/storyboard/beats/${black.id}/generate`,
+    { method: 'POST' },
+  );
+  ok(!!genErr.error, 'Generate band marker → beat mang cờ lỗi (cô lập)');
+
+  // Split/merge đã gỡ — path giờ rơi vào segment động [beatId] (chỉ có PATCH) → POST 405
+  const splitRes = await fetch(`${BASE}/api/jobs/${job.jobId}/storyboard/beats/split`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ beatId: b0.id }),
   });
-  eq(afterSplit.beats.length, 4, 'split → 4 nhịp');
-  eq(
-    afterSplit.beats.map((b: any) => b.order),
-    [0, 1, 2, 3],
-    'order liền mạch sau split',
-  );
-  const half1 = afterSplit.beats.find((b: any) => b.id === b0.id);
-  const half2 = afterSplit.beats.find((b: any) => b.order === 1);
-  eq(half1.region, { x: 0, y: 100, w: 600, h: 200 }, 'nửa trên giữ y, h/2');
-  eq(half2.region, { x: 0, y: 300, w: 600, h: 200 }, 'nửa dưới nối tiếp');
-  const afterMerge = await api<any>(`/api/jobs/${job.jobId}/storyboard/beats/merge`, {
+  eq(splitRes.status, 405, 'route split đã gỡ → 405 (rơi vào [beatId], không có POST)');
+  const mergeRes = await fetch(`${BASE}/api/jobs/${job.jobId}/storyboard/beats/merge`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ beatId: b0.id }),
   });
-  eq(afterMerge.beats.length, 3, 'merge → 3 nhịp');
-  eq(
-    afterMerge.beats.find((b: any) => b.id === b0.id).region,
-    { x: 0, y: 100, w: 600, h: 400 },
-    'merge nối lại region bao',
-  );
+  eq(mergeRes.status, 405, 'route merge đã gỡ → 405 (rơi vào [beatId], không có POST)');
+
+  // Reorder vẫn hoạt động
   const afterReorder = await api<any>(`/api/jobs/${job.jobId}/storyboard/beats/reorder`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -246,131 +256,117 @@ console.log('A. Pages: upload 3 trang → Stage 1 (1 lỗi mock) → storyboard 
     'beats xếp theo order',
   );
   ok(
-    manifest.beats.some((b: any) => b.narration === 'Lời đọc mới dài hơn một chút.'),
-    'sửa tay phản ánh trong export',
+    manifest.beats.some((b: any) => b.narration === MOCK_NARRATION),
+    'kết quả Generate phản ánh trong export',
   );
   ok(manifest.beats.every((b: any) => !('status' in b) && !('cropUrl' in b)), 'manifest không lộ field nội bộ');
 }
 
-// ============ B. STRIP (webtoon dải dọc) ============
-console.log('B. Strip: 2 slice có bubble → stitch + smart-split né bubble → 2A → retry → export → import');
-let stripManifest: any;
-let stripSlices: Buffer[];
+// ============ B. SMART-SPLIT NÉ BUBBLE NGAY LÚC UPLOAD (webtoon) ============
+console.log('B. 2 slice có bubble → upload chia band né bubble → storyboard → Generate từng nhịp → export');
+let bandManifest: any;
+let bubbleSlices: Buffer[];
 {
-  // 2 slice 400×1400 (ratio 3.5 → strip). Canvas 400×2800. SPLIT_HEIGHT=1000 (env e2e):
-  // bubble toàn cục y 950-1150 chặn target 1000 → cắt tại 945 (dò lên từng 5px).
-  stripSlices = [
+  // 2 slice 400×1400. Canvas 400×2800. SPLIT_HEIGHT=1000 (env e2e):
+  // bubble toàn cục y 950-1150 chặn target 1000 → cắt tại ~945 (dò lên từng 5px).
+  bubbleSlices = [
     await bubbleSlice(400, 1400, [{ y: 950, h: 200 }]),
     await bubbleSlice(400, 1400, []),
   ];
   const fd = new FormData();
-  fd.append('images', toBlob(stripSlices[0], 'image/png'), 'a1.png');
-  fd.append('images', toBlob(stripSlices[1], 'image/png'), 'a2.png');
+  fd.append('images', toBlob(bubbleSlices[0], 'image/png'), 'a1.png');
+  fd.append('images', toBlob(bubbleSlices[1], 'image/png'), 'a2.png');
   const job = await api<any>('/api/jobs', { method: 'POST', body: fd });
-  eq(job.items.length, 2, 'job 2 slice');
-
-  await api<any>(`/api/jobs/${job.jobId}/storyboard`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ rpm: 600 }),
-  });
-  const sb = await pollStoryboard(job.jobId);
-  eq(sb.sourceKind, 'strip', 'auto phân loại strip (ratio 3.5)');
-  eq(sb.working.length, 1, '1 working canvas (đã stitch)');
-  eq({ w: sb.working[0].width, h: sb.working[0].height }, { w: 400, h: 2800 }, 'canvas 400×2800');
+  eq(job.items.length, 3, 'canvas 2800 → 3 band');
   // Ingest re-encode JPEG có thể xê dịch vị trí cắt vài px quanh mép bubble —
-  // assert bất biến thuật toán thay vì số cứng: 3 band, cắt NÉ bubble [950,1150),
+  // assert bất biến thuật toán thay vì số cứng: cắt NÉ bubble [950,1150),
   // cắt 1 ngay trên bubble (dò lên từ target 1000), cắt 2 = cắt 1 + SPLIT_HEIGHT (nền trắng).
-  eq(sb.beats.length, 3, '3 band');
-  const cuts = sb.beats.slice(1).map((b: any) => b.region.y);
-  ok(
-    cuts.every((y: number) => y < 950 || y >= 1150),
-    `điểm cắt ${JSON.stringify(cuts)} không xuyên bubble [950,1150)`,
-  );
-  ok(cuts[0] >= 900 && cuts[0] < 950, 'cắt 1 ngay trên bubble (dò lên từ target 1000)');
-  eq(cuts[1], cuts[0] + 1000, 'cắt 2 = cắt 1 + SPLIT_HEIGHT');
-  ok(
-    sb.beats.every(
-      (b: any, i: number) =>
-        b.region.x === 0 &&
-        b.region.w === 400 &&
-        (i === 0 ? b.region.y === 0 : true) &&
-        (i === sb.beats.length - 1 ? b.region.y + b.region.h === 2800 : true),
-    ),
-    'band full-width, phủ kín canvas',
-  );
-  ok(
-    sb.beats.every((b: any) => b.narration === MOCK_NARRATION && !b.error),
-    '2A: mỗi band re-extract qua mock vision',
-  );
+  const dims = await Promise.all(job.items.map((it: any) => itemDims(it.imageUrl)));
+  const cut1 = dims[0].h;
+  const cut2 = cut1 + dims[1].h;
+  ok(cut1 >= 900 && cut1 < 950, `cắt 1 (${cut1}) ngay trên bubble`);
+  eq(cut2, cut1 + 1000, 'cắt 2 = cắt 1 + SPLIT_HEIGHT');
+  eq(dims.reduce((s, d) => s + d.h, 0), 2800, 'band phủ kín canvas');
+  ok(dims.every((d) => d.w === 400), 'band full-width');
 
-  // Retry 1 beat strip → vẫn compose lại được
-  const retried = await api<any>(
-    `/api/jobs/${job.jobId}/storyboard/beats/${sb.beats[0].id}/retry`,
-    { method: 'POST' },
+  // Storyboard KHÔNG chạy Stage 1 trước → mọi nhịp thiếu content (lỗi), rồi Generate từng nhịp
+  await api<any>(`/api/jobs/${job.jobId}/storyboard`, { method: 'POST' });
+  const sb = await pollStoryboard(job.jobId);
+  eq(sb.beats.length, 3, '3 nhịp');
+  ok(
+    sb.beats.every((b: any) => b.error && b.narration === ''),
+    'chưa chạy Stage 1 → nhịp chờ Generate/điền tay',
   );
-  eq(retried.narration, MOCK_NARRATION, 'retry beat strip → narration mock');
+  for (const b of sb.beats) {
+    const gen = await api<any>(`/api/jobs/${job.jobId}/storyboard/beats/${b.id}/generate`, {
+      method: 'POST',
+    });
+    eq(gen.narration, MOCK_NARRATION, `Generate nhịp ${b.order} → narration mock`);
+  }
 
   const exportRes = await fetch(`${BASE}/api/jobs/${job.jobId}/storyboard/export`);
-  stripManifest = await exportRes.json();
-  eq(stripManifest.sourceKind, 'strip', 'export strip');
-  eq(stripManifest.beatCount, 3, 'export 3 beats');
+  bandManifest = await exportRes.json();
+  eq(bandManifest.beatCount, 3, 'export 3 beats');
+  ok(bandManifest.beats.every((b: any) => b.narration === MOCK_NARRATION), 'export sau Generate');
 }
 
-// ============ B2. IMPORT (nạp lại strip từ manifest + ảnh) ============
-console.log('B2. Import: manifest strip + 2 slice → storyboard mới khớp');
+// ============ B2. IMPORT (nạp lại từ manifest + ảnh gốc) ============
+console.log('B2. Import: manifest + 2 slice gốc → chia band tái lập → storyboard khớp');
 {
   const fd = new FormData();
   fd.append(
     'manifest',
-    toBlob(Buffer.from(JSON.stringify(stripManifest)), 'application/json'),
+    toBlob(Buffer.from(JSON.stringify(bandManifest)), 'application/json'),
     'storyboard.json',
   );
-  fd.append('images', toBlob(stripSlices[0], 'image/png'), 'a1.png');
-  fd.append('images', toBlob(stripSlices[1], 'image/png'), 'a2.png');
+  fd.append('images', toBlob(bubbleSlices[0], 'image/png'), 'a1.png');
+  fd.append('images', toBlob(bubbleSlices[1], 'image/png'), 'a2.png');
   const dto = await api<any>('/api/storyboard/import', { method: 'POST', body: fd });
-  ok(dto.jobId !== stripManifest.jobId, 'import tạo job mới');
-  eq(dto.sourceKind, 'strip', 'giữ sourceKind');
+  ok(dto.jobId !== bandManifest.jobId, 'import tạo job mới');
   eq(dto.progress.phase, 'done', 'không compose lại — phase done');
+  eq(dto.working.length, 3, 'working = 3 band tái lập từ ảnh gốc');
   eq(
-    dto.beats.map((b: any) => [b.region.y, b.region.h, b.narration]),
-    stripManifest.beats.map((b: any) => [b.region.y, b.region.h, b.narration]),
-    'beats khớp manifest (region + narration)',
+    dto.beats.map((b: any) => [b.sourceIndex, b.narration]),
+    bandManifest.beats.map((b: any) => [b.sourceIndex, b.narration]),
+    'beats khớp manifest (sourceIndex + narration)',
   );
   const reExport = await (await fetch(`${BASE}/api/jobs/${dto.jobId}/storyboard/export`)).json();
   eq(
     reExport.beats.map((b: any) => [b.order, b.narration]),
-    stripManifest.beats.map((b: any) => [b.order, b.narration]),
+    bandManifest.beats.map((b: any) => [b.order, b.narration]),
     're-export khớp manifest gốc',
   );
 
-  // Import thiếu ảnh → 400 rõ ràng, không dựng nửa vời
+  // Import thiếu ảnh (beat trỏ band không tồn tại) → 400 rõ ràng, không dựng nửa vời
   const fdBad = new FormData();
-  const pagesManifest = { ...stripManifest, sourceKind: 'pages' };
+  const badManifest = {
+    ...bandManifest,
+    beats: bandManifest.beats.map((b: any, i: number) => (i === 0 ? { ...b, sourceIndex: 99 } : b)),
+  };
   fdBad.append(
     'manifest',
-    toBlob(Buffer.from(JSON.stringify(pagesManifest)), 'application/json'),
+    toBlob(Buffer.from(JSON.stringify(badManifest)), 'application/json'),
     'storyboard.json',
   );
-  fdBad.append('images', toBlob(stripSlices[0], 'image/png'), 'a1.png'); // pages cần index 0 duy nhất nhưng region vượt biên trang
+  fdBad.append('images', toBlob(bubbleSlices[0], 'image/png'), 'a1.png');
   const badRes = await fetch(`${BASE}/api/storyboard/import`, { method: 'POST', body: fdBad });
-  eq(badRes.status, 400, 'import không khớp (region vượt biên trang đơn) → 400');
+  eq(badRes.status, 400, 'import không khớp (sourceIndex vượt số band) → 400');
 }
 
 // ============ C. PDF ============
-console.log('C. PDF: upload PDF 2 trang → vào pipeline như ảnh');
+console.log('C. PDF: upload PDF 2 trang → render + gộp + chia band như ảnh');
 {
   const fd = new FormData();
   fd.append('images', toBlob(buildPdf(), 'application/pdf'), 'chapter.pdf');
   const job = await api<any>('/api/jobs', { method: 'POST', body: fd });
-  eq(job.items.length, 2, 'PDF 2 trang → 2 item');
-  eq(
-    job.items.map((it: any) => it.filename),
-    ['chapter-p1.png', 'chapter-p2.png'],
-    'tên trang đúng thứ tự',
+  // 2 trang 200×300 render scale 2 → canvas 400×1200 → SPLIT_HEIGHT=1000 chia 1-2 band.
+  ok(job.items.length >= 1, `PDF vào pipeline → ${job.items.length} band`);
+  ok(
+    job.items.every((it: any) => /^band-\d+\.jpg$/.test(it.filename)),
+    'item PDF cũng là band',
   );
   const img = await fetch(`${BASE}${job.items[0].imageUrl}`);
-  eq(img.status, 200, 'thumbnail trang PDF 200');
+  eq(img.status, 200, 'thumbnail band PDF 200');
 }
 
 console.log(failures === 0 ? '\nE2E_ALL_PASS' : `\nE2E_FAILURES: ${failures}`);

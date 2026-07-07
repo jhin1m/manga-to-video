@@ -1,5 +1,5 @@
-// Verify narration: fillNarration template + skeletonBeats + composeStoryboard (nhánh pages).
-// Nhánh strip (2A vision) verify ở e2e (scripts/e2e-storyboard.mts) qua mock OpenAI server.
+// Verify narration: fillNarration template + skeletonBeats + composeStoryboard (template).
+// Nhánh vision (nút Generate) verify ở e2e (scripts/e2e-storyboard.mts) qua mock OpenAI server.
 import sharp from 'sharp';
 import {
   composeStoryboard,
@@ -33,23 +33,14 @@ eq(fillNarration({ description: '', dialogue: [], note: '' }), '', 'content rỗ
 
 console.log('Test 2: skeletonBeats');
 {
-  const strip = skeletonBeats('strip', [
-    { sourceIndex: 0, bands: [{ x: 0, y: 0, w: 800, h: 4795 }, { x: 0, y: 4795, w: 800, h: 4800 }] },
-  ]);
-  eq(strip.length, 2, 'strip: mỗi band 1 beat');
-  eq(strip.map((b) => b.order), [0, 1], 'order tăng dần');
-  eq(strip[1].region, { x: 0, y: 4795, w: 800, h: 4800 }, 'region gắn đúng band');
-  eq(strip[0].status, 'pending', 'beat khởi tạo pending');
-  const pages = skeletonBeats('pages', [
-    { sourceIndex: 0, bands: [] },
-    { sourceIndex: 1, bands: [] },
-    { sourceIndex: 2, bands: [] },
-  ]);
-  eq(pages.length, 3, 'pages: mỗi trang 1 beat');
-  ok(pages.every((b) => b.region === null), 'pages: region = null (cả trang)');
+  const beats = skeletonBeats([{ sourceIndex: 0 }, { sourceIndex: 1 }, { sourceIndex: 2 }]);
+  eq(beats.length, 3, 'mỗi band 1 beat');
+  eq(beats.map((b) => b.order), [0, 1, 2], 'order tăng dần');
+  ok(beats.every((b) => b.region === null), 'region = null (trọn ảnh band)');
+  eq(beats[0].status, 'pending', 'beat khởi tạo pending');
 }
 
-console.log('Test 3: composeStoryboard nhánh pages (template, không mạng)');
+console.log('Test 3: composeStoryboard (template từ content Stage 1, không mạng)');
 {
   const page = await sharp({
     create: { width: 600, height: 900, channels: 3, background: { r: 200, g: 200, b: 200 } },
@@ -66,7 +57,7 @@ console.log('Test 3: composeStoryboard nhánh pages (template, không mạng)');
     },
     { sourceIndex: 1, buffer: page, width: 600, height: 900, content: null }, // trang lỗi Stage 1
   ];
-  const beats = skeletonBeats('pages', working.map((w) => ({ sourceIndex: w.sourceIndex, bands: [] })));
+  const beats = skeletonBeats(working.map((w) => ({ sourceIndex: w.sourceIndex })));
   createStoryboard({ jobId: 'test-p3', sourceKind: 'pages', working, beats });
   await composeStoryboard('test-p3', { concurrency: 4 });
   const state = getStoryboard('test-p3')!;
