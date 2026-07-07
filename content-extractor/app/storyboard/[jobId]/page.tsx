@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import type { BeatDTO, JobProgress, SourceKind, StoryboardDTO } from '@/lib/schema';
+import type { BeatDTO, JobProgress, StoryboardDTO } from '@/lib/schema';
 
 // Draft sửa nhịp: region giữ dạng chuỗi khi gõ, parse lúc Lưu.
 interface BeatDraft {
@@ -29,7 +29,7 @@ function phaseLabel(p: JobProgress): string {
     case 'ready':
       return 'Sẵn sàng';
     case 'queued':
-      return 'Đang chuẩn bị (stitch + chia band)…';
+      return 'Đang chuẩn bị nhịp…';
     case 'processing':
       return `Đang soạn nhịp ${p.done}/${p.total}…`;
     case 'done':
@@ -39,10 +39,15 @@ function phaseLabel(p: JobProgress): string {
   }
 }
 
-const kindLabel: Record<SourceKind, string> = {
-  pages: 'Trang rời (manga)',
-  strip: 'Dải dọc (webtoon/PDF)',
-};
+// Icon AI (sparkles) cho nút Generate.
+function SparklesIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden className="h-3.5 w-3.5">
+      <path d="M12 2l1.9 5.6L19.5 9.5l-5.6 1.9L12 17l-1.9-5.6L4.5 9.5l5.6-1.9L12 2z" />
+      <path d="M19 13.5l1 2.9 2.9 1-2.9 1-1 2.9-1-2.9-2.9-1 2.9-1 1-2.9z" />
+    </svg>
+  );
+}
 
 export default function StoryboardPage() {
   const { jobId } = useParams<{ jobId: string }>();
@@ -53,7 +58,6 @@ export default function StoryboardPage() {
   const [drafts, setDrafts] = useState<Record<string, BeatDraft>>({});
   const [rowBusy, setRowBusy] = useState<Set<string>>(new Set());
   const [selectedBeat, setSelectedBeat] = useState<string | null>(null);
-  const [recreateKind, setRecreateKind] = useState<'auto' | SourceKind>('auto');
   const [busy, setBusy] = useState(false);
   const [rev, setRev] = useState(0); // cache-buster cho crop preview sau khi region/beat đổi
   const esRef = useRef<EventSource | null>(null);
@@ -208,23 +212,24 @@ export default function StoryboardPage() {
     }
   }
 
-  async function retryBeat(beatId: string) {
+  // Generate bằng AI vision: crop vùng nhịp → mô tả + thoại → narration.
+  async function generateBeat(beatId: string) {
     setBeatBusy(beatId, true);
     setError(null);
     try {
       const updated = await fetchJSON<BeatDTO>(
-        `/api/jobs/${jobId}/storyboard/beats/${beatId}/retry`,
+        `/api/jobs/${jobId}/storyboard/beats/${beatId}/generate`,
         { method: 'POST' },
       );
       replaceBeat(updated);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Thử lại thất bại');
+      setError(err instanceof Error ? err.message : 'Generate thất bại');
     } finally {
       setBeatBusy(beatId, false);
     }
   }
 
-  // split/merge/reorder trả về DTO đầy đủ (thao tác đổi nhiều nhịp).
+  // reorder trả về DTO đầy đủ (thao tác đổi nhiều nhịp).
   async function beatOp(path: string, body: Record<string, unknown>, beatId: string) {
     setBeatBusy(beatId, true);
     setError(null);
@@ -247,11 +252,8 @@ export default function StoryboardPage() {
     setBusy(true);
     setError(null);
     try {
-      const body = recreateKind === 'auto' ? {} : { sourceKind: recreateKind };
       const next = await fetchJSON<StoryboardDTO>(`/api/jobs/${jobId}/storyboard`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
       });
       setDto(next);
       setDrafts({});
@@ -304,20 +306,11 @@ export default function StoryboardPage() {
         <div>
           <h1 className="text-2xl font-bold">Storyboard</h1>
           <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
-            Nguồn: <span className="font-medium">{kindLabel[dto.sourceKind]}</span> — {beats.length}{' '}
-            nhịp. Sửa lời đọc + vùng hình rồi Export cho Stage 2 (TTS/video).
+            {beats.length} nhịp — mỗi nhịp một ảnh đã chia lúc upload. Sửa lời đọc + vùng hình
+            (hoặc bấm Generate) rồi Export cho Stage 2 (TTS/video).
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={recreateKind}
-            onChange={(e) => setRecreateKind(e.target.value as 'auto' | SourceKind)}
-            className="rounded border border-neutral-300 bg-transparent px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-900"
-          >
-            <option value="auto">Tự phân loại nguồn</option>
-            <option value="pages">Trang rời (manga)</option>
-            <option value="strip">Dải dọc (webtoon/PDF)</option>
-          </select>
           <button
             onClick={recreate}
             disabled={busy || running}
@@ -529,7 +522,7 @@ export default function StoryboardPage() {
                           <p className="whitespace-pre-wrap text-sm">{beat.narration}</p>
                         ) : (
                           <p className="text-xs italic text-neutral-400">
-                            {beat.error ? 'Chưa có lời đọc — sửa tay hoặc thử lại.' : running ? 'Đang soạn…' : 'Chưa có lời đọc'}
+                            {beat.error ? 'Chưa có lời đọc — sửa tay hoặc bấm Generate.' : running ? 'Đang soạn…' : 'Chưa có lời đọc — bấm Generate hoặc sửa tay.'}
                           </p>
                         )}
                         <div className="mt-2 flex flex-wrap gap-2">
@@ -540,28 +533,14 @@ export default function StoryboardPage() {
                             Sửa
                           </button>
                           <button
-                            onClick={() => retryBeat(beat.id)}
+                            onClick={() => generateBeat(beat.id)}
                             disabled={isBusy || running}
-                            className="rounded border border-neutral-300 px-3 py-1 text-xs font-medium hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+                            title="Generate lời đọc từ ảnh bằng AI vision"
+                            className="inline-flex items-center gap-1 rounded border border-violet-500 px-3 py-1 text-xs font-semibold text-violet-600 hover:bg-violet-50 disabled:opacity-50 dark:text-violet-400 dark:hover:bg-violet-950"
                           >
-                            {isBusy ? 'Đang chạy…' : 'Thử lại'}
+                            <SparklesIcon />
+                            {isBusy ? 'Đang generate…' : 'Generate'}
                           </button>
-                          <button
-                            onClick={() => beatOp('split', { beatId: beat.id }, beat.id)}
-                            disabled={isBusy || running}
-                            className="rounded border border-neutral-300 px-3 py-1 text-xs font-medium hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
-                          >
-                            Tách đôi
-                          </button>
-                          {i < beats.length - 1 && (
-                            <button
-                              onClick={() => beatOp('merge', { beatId: beat.id }, beat.id)}
-                              disabled={isBusy || running}
-                              className="rounded border border-neutral-300 px-3 py-1 text-xs font-medium hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
-                            >
-                              Gộp nhịp dưới
-                            </button>
-                          )}
                           <button
                             onClick={() => beatOp('reorder', { beatId: beat.id, to: beat.order - 1 }, beat.id)}
                             disabled={isBusy || running || i === 0}
