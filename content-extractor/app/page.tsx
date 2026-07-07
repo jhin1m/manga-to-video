@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { ItemDTO, JobProgress, JobStatusDTO, SourceKind, StoryboardDTO } from '@/lib/schema';
+import type { ItemDTO, JobProgress, JobStatusDTO, StoryboardDTO } from '@/lib/schema';
 
 interface Draft {
   description: string;
@@ -39,7 +39,6 @@ function phaseLabel(p: JobProgress): string {
 
 export default function Home() {
   const router = useRouter();
-  const [files, setFiles] = useState<File[]>([]);
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,7 +48,6 @@ export default function Home() {
   const [drafts, setDrafts] = useState<Record<number, Draft>>({});
   const [rowBusy, setRowBusy] = useState<Set<number>>(new Set());
   const [rpm, setRpm] = useState(30); // nhịp vision (req/phút) — chỉnh trước khi Chạy để tránh 429
-  const [sbKind, setSbKind] = useState<'auto' | SourceKind>('auto'); // override nguồn khi tạo storyboard
   const [sbBusy, setSbBusy] = useState(false);
   const [importManifest, setImportManifest] = useState<File | null>(null);
   const [importImages, setImportImages] = useState<File[]>([]);
@@ -90,16 +88,18 @@ export default function Home() {
     }, 2000);
   }
 
-  function mergeFiles(incoming: FileList | File[]) {
-    const usable = Array.from(incoming).filter((f) => ACCEPTED.test(f.name));
+  // Chọn/thả file là đi thẳng vào xem trước: upload ngay, không có bước bấm nút trung gian.
+  // Server tự natural-sort theo tên file nên client khỏi gom/sắp trước. Dedupe theo tên để
+  // một lượt chọn lỡ trùng file không gửi hai lần.
+  function handleSelection(incoming: FileList | File[]) {
+    if (busy) return;
+    const byName = new Map<string, File>();
+    for (const f of Array.from(incoming)) {
+      if (ACCEPTED.test(f.name)) byName.set(f.name, f);
+    }
+    const usable = Array.from(byName.values());
     if (usable.length === 0) return;
-    setFiles((prev) => {
-      const byName = new Map(prev.map((f) => [f.name, f]));
-      for (const f of usable) byName.set(f.name, f);
-      return Array.from(byName.values()).sort((a, b) =>
-        a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }),
-      );
-    });
+    void handleUpload(usable);
   }
 
   function setRowBusyFlag(index: number, on: boolean) {
@@ -155,16 +155,16 @@ export default function Home() {
   }
 
   // Bước 1: upload + downscale → job ở phase 'ready'. CHƯA gọi vision; hiện lưới xem trước.
-  async function handleUpload() {
+  async function handleUpload(toUpload: File[]) {
     setError(null);
-    const zips = files.filter((f) => /\.zip$/i.test(f.name));
+    const zips = toUpload.filter((f) => /\.zip$/i.test(f.name));
     if (zips.length > 1) {
       setError('Chỉ hỗ trợ 1 file zip mỗi lần chạy');
       return;
     }
     const fd = new FormData();
     if (zips[0]) fd.append('zip', zips[0]);
-    for (const f of files) {
+    for (const f of toUpload) {
       if (!/\.zip$/i.test(f.name)) fd.append('images', f);
     }
     setBusy(true);
@@ -269,12 +269,7 @@ export default function Home() {
     setError(null);
     setSbBusy(true);
     try {
-      const body = sbKind === 'auto' ? { rpm } : { sourceKind: sbKind, rpm };
-      await fetchJSON<StoryboardDTO>(`/api/jobs/${jobId}/storyboard`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      await fetchJSON<StoryboardDTO>(`/api/jobs/${jobId}/storyboard`, { method: 'POST' });
       router.push(`/storyboard/${jobId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Không tạo được storyboard');
@@ -312,7 +307,6 @@ export default function Home() {
     esRef.current?.close();
     esRef.current = null;
     stopPolling();
-    setFiles([]);
     setJobId(null);
     setProgress(null);
     setItems([]);
@@ -330,8 +324,8 @@ export default function Home() {
     <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-8">
       <h1 className="text-2xl font-bold">Manga Content Extractor</h1>
       <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
-        Tải ảnh chapter (hoặc zip) → trích xuất mô tả + thoại từng trang bằng vision LLM → sửa tay →
-        xuất JSON.
+        Tải ảnh chapter (hoặc zip/PDF) → gộp thành một dải dọc rồi tự chia lại theo khoảng an toàn →
+        trích xuất mô tả + thoại từng ảnh bằng vision LLM → sửa tay → xuất JSON.
       </p>
 
       {error && (
@@ -355,7 +349,7 @@ export default function Home() {
             onDrop={(e) => {
               e.preventDefault();
               setDragging(false);
-              mergeFiles(e.dataTransfer.files);
+              handleSelection(e.dataTransfer.files);
             }}
             className={`rounded-xl border-2 border-dashed p-8 text-center transition-colors ${
               dragging
@@ -364,7 +358,9 @@ export default function Home() {
             }`}
           >
             <p className="text-sm text-neutral-600 dark:text-neutral-300">
-              Kéo thả ảnh (đánh số 1.jpg, 2.jpg, …), file .zip hoặc .pdf vào đây
+              {busy
+                ? 'Đang tải lên & xử lý ảnh…'
+                : 'Kéo thả ảnh (đánh số 1.jpg, 2.jpg, …), file .zip hoặc .pdf vào đây'}
             </p>
             <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
               <label className="cursor-pointer rounded-lg bg-neutral-800 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-700 dark:bg-neutral-200 dark:text-neutral-900 dark:hover:bg-neutral-300">
@@ -375,7 +371,7 @@ export default function Home() {
                   accept="image/*,.zip,.pdf"
                   className="hidden"
                   onChange={(e) => {
-                    if (e.target.files) mergeFiles(e.target.files);
+                    if (e.target.files) handleSelection(e.target.files);
                     e.target.value = '';
                   }}
                 />
@@ -388,41 +384,13 @@ export default function Home() {
                   // @ts-expect-error -- webkitdirectory: thuộc tính không chuẩn nhưng các trình duyệt đều hỗ trợ
                   webkitdirectory=""
                   onChange={(e) => {
-                    if (e.target.files) mergeFiles(e.target.files);
+                    if (e.target.files) handleSelection(e.target.files);
                     e.target.value = '';
                   }}
                 />
               </label>
             </div>
           </div>
-
-          {files.length > 0 && (
-            <div className="mt-4 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">{files.length} file — thứ tự đọc:</span>
-                <button
-                  onClick={() => setFiles([])}
-                  className="text-sm text-neutral-500 underline hover:text-neutral-700 dark:hover:text-neutral-300"
-                >
-                  Xóa hết
-                </button>
-              </div>
-              <p className="mt-2 break-all text-xs text-neutral-500 dark:text-neutral-400">
-                {files
-                  .slice(0, 12)
-                  .map((f) => f.name)
-                  .join(', ')}
-                {files.length > 12 && ` … +${files.length - 12} file nữa`}
-              </p>
-              <button
-                onClick={handleUpload}
-                disabled={busy}
-                className="mt-4 rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-50"
-              >
-                {busy ? 'Đang tải lên…' : 'Tải lên & xem trước'}
-              </button>
-            </div>
-          )}
 
           {/* Nạp lại storyboard đã export (store in-memory mất khi restart) */}
           <details className="mt-4 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
@@ -466,7 +434,7 @@ export default function Home() {
         <section className="mt-6">
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
             <span className="text-sm font-medium">
-              {items.length} trang — xem trước theo thứ tự đọc
+              {items.length} ảnh — đã gộp thành dải dọc và chia lại theo khoảng an toàn
             </span>
             <div className="flex flex-wrap items-center gap-3">
               <label className="flex items-center gap-2 text-sm text-neutral-600 dark:text-neutral-300">
@@ -486,20 +454,8 @@ export default function Home() {
                 disabled={busy || items.length === 0}
                 className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-50"
               >
-                {busy ? 'Đang bắt đầu…' : `Chạy tất cả (${items.length} trang)`}
+                {busy ? 'Đang bắt đầu…' : `Chạy tất cả (${items.length} ảnh)`}
               </button>
-              {/* Dải dọc (webtoon/PDF) đi thẳng storyboard: 2A tự re-extract theo band,
-                  không cần đốt vision Stage 1 cho từng slice. Manga trang rời nên Chạy trước. */}
-              <select
-                value={sbKind}
-                onChange={(e) => setSbKind(e.target.value as 'auto' | SourceKind)}
-                className="rounded border border-neutral-300 bg-transparent px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-900"
-                title="Nguồn: tự phân loại theo tỉ lệ ảnh, hoặc ép trang rời / dải dọc"
-              >
-                <option value="auto">Tự phân loại nguồn</option>
-                <option value="pages">Trang rời (manga)</option>
-                <option value="strip">Dải dọc (webtoon/PDF)</option>
-              </select>
               <button
                 onClick={createStoryboard}
                 disabled={sbBusy || items.length === 0}
@@ -544,16 +500,6 @@ export default function Home() {
             <div className="flex items-center gap-3">
               {!running && (
                 <>
-                  <select
-                    value={sbKind}
-                    onChange={(e) => setSbKind(e.target.value as 'auto' | SourceKind)}
-                    className="rounded border border-neutral-300 bg-transparent px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-900"
-                    title="Nguồn: tự phân loại theo tỉ lệ ảnh, hoặc ép trang rời / dải dọc"
-                  >
-                    <option value="auto">Tự phân loại nguồn</option>
-                    <option value="pages">Trang rời (manga)</option>
-                    <option value="strip">Dải dọc (webtoon/PDF)</option>
-                  </select>
                   <button
                     onClick={createStoryboard}
                     disabled={sbBusy}
