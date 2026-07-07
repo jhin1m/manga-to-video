@@ -1,8 +1,12 @@
 import { NextResponse } from 'next/server';
-import sharp from 'sharp';
-import pLimit from 'p-limit';
 import { createJob } from '@/lib/jobs';
-import { downscale, expandPdfs, extractImages, type RawImage } from '@/lib/pipeline';
+import {
+  expandPdfs,
+  extractImages,
+  ingestBandItems,
+  type BandItem,
+  type RawImage,
+} from '@/lib/pipeline';
 import { stitchSlices } from '@/lib/stitch';
 import {
   createStoryboard,
@@ -134,26 +138,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Không tìm thấy ảnh trong dữ liệu tải lên' }, { status: 400 });
   }
 
-  // Downscale như ingest Stage 1 (cùng MAX_EDGE) để toạ độ working image khớp phiên export.
+  // Ingest y hệt upload chapter (cùng MAX_EDGE + settings smart-split): gộp thành canvas
+  // dọc rồi chia band — cùng bộ ảnh + cùng env thì band tái lập đúng phiên export.
   const maxEdge = readMaxEdge();
-  const limit = pLimit(4);
-  let items: Array<{ filename: string; buffer: Buffer; mime: string }>;
+  let items: BandItem[];
   try {
-    items = await Promise.all(
-      images.map((img) =>
-        limit(async () => {
-          try {
-            return {
-              filename: img.filename,
-              buffer: await downscale(img.buffer, maxEdge),
-              mime: 'image/jpeg',
-            };
-          } catch {
-            throw new Error(`Ảnh hỏng hoặc không đọc được: ${img.filename}`);
-          }
-        }),
-      ),
-    );
+    items = await ingestBandItems(images, maxEdge);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Không xử lý được ảnh tải lên';
     return NextResponse.json({ error: message }, { status: 400 });
@@ -175,24 +165,17 @@ export async function POST(req: Request) {
         { sourceIndex: 0, buffer: canvas.buffer, width: canvas.width, height: canvas.height },
       ];
     } else {
-      const dims = await Promise.all(
-        items.map(async (it) => {
-          const m = await sharp(it.buffer).metadata();
-          if (!m.width || !m.height) throw new Error(`Không đọc được kích thước: ${it.filename}`);
-          return { width: m.width, height: m.height };
-        }),
-      );
       const outOfRange = manifest.beats.find((b) => b.sourceIndex >= items.length);
       if (outOfRange) {
         throw new Error(
-          `Beat trỏ sourceIndex ${outOfRange.sourceIndex} nhưng chỉ tải lên ${items.length} ảnh — thiếu ảnh nguồn`,
+          `Beat trỏ sourceIndex ${outOfRange.sourceIndex} nhưng ảnh tải lên chỉ chia được ${items.length} band — kiểm tra đúng bộ ảnh và env smart-split như phiên export`,
         );
       }
       working = items.map((it, i) => ({
         sourceIndex: i,
         buffer: it.buffer,
-        width: dims[i].width,
-        height: dims[i].height,
+        width: it.width,
+        height: it.height,
         content: null, // content Stage 1 không nằm trong storyboard manifest
       }));
     }

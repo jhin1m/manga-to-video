@@ -1,6 +1,6 @@
 import sharp from 'sharp';
 import pLimit from 'p-limit';
-import type { BeatRegion, SceneContent, SourceKind } from './schema';
+import type { BeatRegion, SceneContent } from './schema';
 import { emptyBeat } from './schema';
 import { getJob } from './jobs';
 import { createPacer } from './pipeline';
@@ -22,34 +22,14 @@ export function fillNarration(scene: SceneContent): string {
   return [scene.description, ...scene.dialogue.map((d) => `"${d}"`)].filter(Boolean).join('\n');
 }
 
-// Nguồn dựng nhịp: working image + bands (strip) hoặc content Stage 1 (pages).
-export interface WorkingSource {
-  sourceIndex: number;
-  bands: BeatRegion[]; // strip: từ smart-split; pages: bỏ trống (cả trang = 1 nhịp)
-}
-
-// Khung nhịp trước compose: mỗi band (strip) / mỗi trang (pages) → 1 beat pending,
-// order tăng dần toàn cục.
-export function skeletonBeats(sourceKind: SourceKind, sources: WorkingSource[]): StoredBeat[] {
-  const beats: StoredBeat[] = [];
-  for (const src of sources) {
-    if (sourceKind === 'strip') {
-      for (const band of src.bands) {
-        beats.push({
-          ...emptyBeat({ order: beats.length, sourceIndex: src.sourceIndex, region: band }),
-          status: 'pending',
-          rev: 0,
-        });
-      }
-    } else {
-      beats.push({
-        ...emptyBeat({ order: beats.length, sourceIndex: src.sourceIndex, region: null }),
-        status: 'pending',
-        rev: 0,
-      });
-    }
-  }
-  return beats;
+// Khung nhịp trước compose: mỗi working image (band đã chia lúc upload) → 1 beat pending
+// trọn ảnh (region null), order tăng dần toàn cục.
+export function skeletonBeats(sources: Array<{ sourceIndex: number }>): StoredBeat[] {
+  return sources.map((src, i) => ({
+    ...emptyBeat({ order: i, sourceIndex: src.sourceIndex, region: null }),
+    status: 'pending',
+    rev: 0,
+  }));
 }
 
 // Cắt vùng band từ working image — clamp vào biên ảnh để region người chỉnh tay
@@ -65,12 +45,17 @@ export async function cropRegion(working: WorkingImage, region: BeatRegion): Pro
     .toBuffer();
 }
 
-// Compose MỘT beat — dùng chung cho chạy hàng loạt lẫn retry từng nhịp.
-// Strip (2A): crop band → describeImage → template. Pages: content Stage 1 (đọc TƯƠI từ
-// job — retry Stage 1 xong thì retry beat ăn ngay, không kẹt snapshot lúc dựng storyboard).
-// Guard rev: người dùng sửa/tách/gộp beat trong lúc chờ vision → kết quả compose bị BỎ,
+// Compose MỘT beat — dùng chung cho chạy hàng loạt, retry và nút Generate.
+// Mặc định: content Stage 1 (đọc TƯƠI từ job — retry Stage 1 xong thì compose ăn ngay,
+// không kẹt snapshot lúc dựng storyboard). opts.vision (nút Generate) hoặc nguồn strip
+// (manifest cũ nạp lại): crop vùng nhịp → describeImage → template.
+// Guard rev: người dùng sửa beat trong lúc chờ vision → kết quả compose bị BỎ,
 // bản sửa tay luôn thắng.
-export async function composeBeat(jobId: string, beatId: string): Promise<void> {
+export async function composeBeat(
+  jobId: string,
+  beatId: string,
+  opts?: { vision?: boolean },
+): Promise<void> {
   const state = getStoryboard(jobId);
   const beat = getBeat(jobId, beatId);
   if (!state || !beat) return;
@@ -83,7 +68,7 @@ export async function composeBeat(jobId: string, beatId: string): Promise<void> 
   }
   try {
     let scene: SceneContent | null;
-    if (state.sourceKind === 'strip') {
+    if (opts?.vision || state.sourceKind === 'strip') {
       const band = beat.region ?? { x: 0, y: 0, w: working.width, h: working.height };
       const cropped = await cropRegion(working, band);
       scene = await describeImage(cropped, `beat#${beat.order}`);
@@ -97,7 +82,7 @@ export async function composeBeat(jobId: string, beatId: string): Promise<void> 
       setBeatError(
         jobId,
         beatId,
-        'Nội dung trống — chạy/Retry trích xuất Stage 1 cho trang này hoặc tự điền narration.',
+        'Nội dung trống — chạy trích xuất Stage 1, bấm Generate, hoặc tự điền narration.',
       );
       return;
     }
