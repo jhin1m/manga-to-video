@@ -248,6 +248,25 @@ export default function Home() {
     }
   }
 
+  // Xoá 1 band ở lưới preview (hard-delete + re-index) — chỉ khả dụng lúc job 'ready'
+  // (route tự chặn 409 nếu job đang chạy), dùng chung cờ busy với nút Chạy/Chọn file.
+  async function removeItem(index: number) {
+    if (!jobId) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const dto = await fetchJSON<JobStatusDTO>(`/api/jobs/${jobId}/items/${index}`, {
+        method: 'DELETE',
+      });
+      setItems(dto.items);
+      setProgress(dto.progress);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Không xoá được ảnh');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function retryItem(index: number) {
     if (!jobId) return;
     setRowBusyFlag(index, true);
@@ -476,13 +495,25 @@ export default function Home() {
             {[...items]
               .sort((a, b) => a.index - b.index)
               .map((item) => (
-                <figure key={item.index} className="min-w-0">
+                // Key theo filename (band-N.jpg, ổn định khi xoá) chứ KHÔNG theo index: sau khi
+                // deleteItem re-index, ô sống sót đổi src (/items/{idx}/image cũ→mới) nên trình
+                // duyệt refetch đúng ảnh — key theo index sẽ giữ nguyên src string → hiện ảnh cũ.
+                <figure key={item.filename} className="relative min-w-0">
                   {/* eslint-disable-next-line @next/next/no-img-element -- ảnh từ store in-memory, không dùng next/image */}
                   <img
                     src={item.imageUrl}
                     alt={item.filename}
                     className="aspect-[3/4] w-full rounded border border-neutral-200 object-contain dark:border-neutral-800"
                   />
+                  <button
+                    type="button"
+                    onClick={() => removeItem(item.index)}
+                    disabled={busy}
+                    title="Xoá ảnh này"
+                    className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-xs font-bold leading-none text-white hover:bg-red-600 disabled:opacity-50"
+                  >
+                    ✕
+                  </button>
                   <figcaption className="mt-1 truncate text-center text-xs text-neutral-500">
                     {item.index + 1}. {item.filename}
                   </figcaption>

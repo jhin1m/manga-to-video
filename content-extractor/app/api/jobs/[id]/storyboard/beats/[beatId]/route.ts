@@ -1,10 +1,12 @@
 import { NextResponse } from 'next/server';
 import type { BeatRegion } from '@/lib/schema';
 import {
+  deleteBeat,
   getBeat,
   getStoryboard,
   reorderBeat,
   toBeatDTO,
+  toStoryboardDTO,
   updateBeat,
 } from '@/lib/storyboard-store';
 
@@ -116,4 +118,28 @@ export async function PATCH(
   }
 
   return NextResponse.json(toBeatDTO(id, getBeat(id, beatId)!));
+}
+
+// Hard-delete 1 nhịp: splice + re-sequence order phần còn lại. Chỉ cho xoá khi storyboard
+// không đang dựng/compose (queued/processing) — tránh lệch currentIndex/kết quả đang bay.
+export async function DELETE(
+  _req: Request,
+  { params }: { params: Promise<{ id: string; beatId: string }> },
+) {
+  const { id, beatId } = await params;
+  const state = getStoryboard(id);
+  if (!state) {
+    return NextResponse.json({ error: 'Chưa có storyboard cho job này' }, { status: 404 });
+  }
+  const beat = getBeat(id, beatId);
+  if (!beat) {
+    return NextResponse.json({ error: 'Không tìm thấy nhịp trong storyboard' }, { status: 404 });
+  }
+  if (state.progress.phase === 'queued' || state.progress.phase === 'processing') {
+    return NextResponse.json({ error: 'Storyboard đang xử lý' }, { status: 409 });
+  }
+
+  deleteBeat(id, beatId);
+
+  return NextResponse.json(toStoryboardDTO(getStoryboard(id)!));
 }

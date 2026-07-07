@@ -93,6 +93,21 @@ export function setItemError(id: string, index: number, message: string): void {
   updateProgress(id, { done: recomputeDone(job) });
 }
 
+// Hard-delete 1 band khỏi job: splice + gán lại .index cho phần còn lại (route enforce
+// chỉ gọi khi phase không đang chạy). index ngoài biên → no-op, trả job nguyên (không throw)
+// để route tự quyết 404; jobId lạ → undefined.
+export function deleteItem(id: string, index: number): Job | undefined {
+  const job = store.get(id);
+  if (!job) return undefined;
+  if (!Number.isInteger(index) || index < 0 || index >= job.items.length) return job;
+  job.items.splice(index, 1);
+  job.items.forEach((it, i) => {
+    it.index = i;
+  });
+  updateProgress(id, { total: job.items.length, done: recomputeDone(job), currentIndex: null });
+  return job;
+}
+
 export function subscribe(id: string, cb: (p: JobProgress) => void): () => void {
   const event = `p:${id}`;
   bus.on(event, cb);

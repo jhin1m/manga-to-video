@@ -229,6 +229,25 @@ export default function StoryboardPage() {
     }
   }
 
+  // Xoá 1 nhịp (hard-delete + re-sequence order) — chặn khi storyboard đang dựng/compose
+  // (route tự trả 409), disabled thêm khi đang running để khỏi race với compose đang bay.
+  async function removeBeat(beatId: string) {
+    setBeatBusy(beatId, true);
+    setError(null);
+    try {
+      const next = await fetchJSON<StoryboardDTO>(
+        `/api/jobs/${jobId}/storyboard/beats/${beatId}`,
+        { method: 'DELETE' },
+      );
+      setDto(next);
+      setRev((r) => r + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Không xoá được nhịp');
+    } finally {
+      setBeatBusy(beatId, false);
+    }
+  }
+
   // reorder trả về DTO đầy đủ (thao tác đổi nhiều nhịp).
   async function beatOp(path: string, body: Record<string, unknown>, beatId: string) {
     setBeatBusy(beatId, true);
@@ -554,6 +573,13 @@ export default function StoryboardPage() {
                             className="rounded border border-neutral-300 px-2 py-1 text-xs font-medium hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
                           >
                             ▼
+                          </button>
+                          <button
+                            onClick={() => removeBeat(beat.id)}
+                            disabled={isBusy || running}
+                            className="rounded border border-red-300 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"
+                          >
+                            Xoá
                           </button>
                         </div>
                       </div>

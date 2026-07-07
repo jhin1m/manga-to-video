@@ -139,6 +139,26 @@ export function updateBeat(
   return beat;
 }
 
+// Hard-delete 1 nhịp: splice theo id + gán lại order 0..n-1 (route enforce chỉ gọi khi
+// phase không đang chạy). Working image để orphan (KISS, không GC). beatId lạ → no-op,
+// trả state nguyên; jobId lạ → undefined.
+export function deleteBeat(jobId: string, beatId: string): StoryboardState | undefined {
+  const state = store.get(jobId);
+  if (!state) return undefined;
+  const idx = state.beats.findIndex((b) => b.id === beatId);
+  if (idx === -1) return state;
+  state.beats.splice(idx, 1);
+  state.beats.forEach((b, i) => {
+    b.order = i;
+  });
+  updateStoryboardProgress(jobId, {
+    total: state.beats.length,
+    done: recomputeDone(state),
+    currentIndex: null,
+  });
+  return state;
+}
+
 // Kết quả compose (Phase 3) cho một beat.
 export function setBeatResult(
   jobId: string,

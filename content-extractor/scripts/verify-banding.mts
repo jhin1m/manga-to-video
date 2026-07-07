@@ -1,14 +1,18 @@
-// Verify banding: smart-split (port SmartStitch) + stitch + ingest band + PDF expand.
-// Kỳ vọng smart-split tính tay từ thuật toán gốc (lib.rs) — cùng settings, cùng ảnh
-// tổng hợp thì hành vi phải khớp từng pixel.
+// Verify banding: smart-split (cắt tại gutter dày, ngữ cảnh) + stitch + ingest band + PDF expand.
+// Settings test-local `S` độc lập process.env (không phụ thuộc .env.local của máy chạy).
 import sharp from 'sharp';
 import {
+  chooseCuts,
+  computeSafeRuns,
   detectBands,
-  findSplitPosition,
   isSafeLine,
+  mergeLowInkBands,
+  regionsFromCuts,
   toGray,
+  type GrayImage,
   type SplitSettings,
 } from '../lib/smart-split';
+import type { BeatRegion } from '../lib/schema';
 import { stitchSlices } from '../lib/stitch';
 import { expandPdfs, ingestBandItems } from '../lib/pipeline';
 
@@ -31,14 +35,15 @@ function assertOk(cond: boolean, label: string) {
   }
 }
 
-// Canvas trắng + "bubble" đen (rect không tràn hết bề ngang → hàng cắt ngang bubble là unsafe).
+// Canvas trắng + "block" đen (rect không tràn hết bề ngang → hàng cắt ngang block là unsafe).
+// Dùng để dựng nhân vật/bong bóng/nội dung giả — vùng còn lại là "gutter" (khoảng trắng).
 async function makeStrip(
   width: number,
   height: number,
-  bubbles: Array<{ x: number; y: number; w: number; h: number }>,
+  blocks: Array<{ x: number; y: number; w: number; h: number }>,
 ): Promise<Buffer> {
   const composites = await Promise.all(
-    bubbles.map(async (b) => ({
+    blocks.map(async (b) => ({
       input: await sharp({
         create: { width: b.w, height: b.h, channels: 3, background: { r: 0, g: 0, b: 0 } },
       })
@@ -58,56 +63,67 @@ async function makeStrip(
 }
 
 const S: SplitSettings = {
-  splitHeight: 5000,
-  scanLineStep: 5,
   lineTolerance: 25,
-  minDistancePct: 40,
   ignorableBorder: 5,
+  minGutterHeight: 24,
+  minBandHeight: 300,
+  maxBandHeight: 700,
+  minInkDensity: 0.02,
 };
 
-// ---- Test 1: bidirectional search né bubble ----
-console.log('Test 1: strip 800x12000, bubble [4800,5300) và [9600,9900)');
+// ---- T1: giữ nhân vật + bong bóng — bỏ qua khe hẹp, cắt tại gutter dày ----
+console.log('T1: khối A (nhân vật, y100-300) + khe hẹp 10px + khối B (bong bóng, y310-400) + gutter dày (y400-460)');
 {
-  const strip = await makeStrip(800, 12000, [
-    { x: 200, y: 4800, w: 400, h: 500 },
-    { x: 200, y: 9600, w: 400, h: 300 },
+  const strip = await makeStrip(400, 1000, [
+    { x: 100, y: 100, w: 200, h: 200 }, // khối A
+    { x: 100, y: 310, w: 200, h: 90 }, // khối B — cách A 10px (< minGutterHeight 24)
+    { x: 100, y: 460, w: 200, h: 10 }, // khối C — chặn cuối gutter dày (400-460, 60px)
   ]);
   const gray = await toGray(strip);
-  assertOk(!isSafeLine(gray, 5000, S), 'hàng 5000 (giữa bubble) là unsafe');
-  assertOk(isSafeLine(gray, 4795, S), 'hàng 4795 (trên bubble) là safe');
-  const bands = await detectBands(strip, S);
-  // Tính tay: target 5000 unsafe → dò lên từng 5px → 4795 (safe đầu tiên < 4800).
-  // Band 2: target 4795+5000=9795 unsafe → dò lên → 9595. Band 3: phần còn lại.
-  assertEq(bands, [
-    { x: 0, y: 0, w: 800, h: 4795 },
-    { x: 0, y: 4795, w: 800, h: 4800 },
-    { x: 0, y: 9595, w: 800, h: 2405 },
-  ], 'bands khớp kỳ vọng tính tay');
-  const cuts = bands.slice(1).map((b) => b.y);
+  const runs = computeSafeRuns(gray, S);
+  assertEq(
+    runs,
+    [
+      { start: 0, end: 100 },
+      { start: 300, end: 310 },
+      { start: 400, end: 460 },
+      { start: 470, end: 1000 },
+    ],
+    'safe run khớp bố cục: trước A, khe A-B, gutter dày, phần còn lại',
+  );
+  const cuts = chooseCuts(runs, gray.height, S);
+  assertEq(cuts, [430], 'cắt duy nhất tại tâm gutter dày (400-460 → 430)');
   assertOk(
-    cuts.every((y) => !(y >= 4800 && y < 5300) && !(y >= 9600 && y < 9900)),
-    'không điểm cắt nào xuyên bubble',
+    cuts.every((y) => !(y >= 300 && y < 310)),
+    'không điểm cắt nào rơi vào khe hẹp nhân vật↔bong bóng (300-310)',
   );
 }
 
-// ---- Test 2: min-distance chặn band nhỏ → reset dò xuống ----
-console.log('Test 2: min-distance — bubble [500,2100), splitHeight 2000');
+// ---- T2: chọn gutter dày nhất trong cửa sổ khi có nhiều ứng viên hợp lệ ----
+console.log('T2: 2 gutter cùng đạt minGutterHeight trong cửa sổ — chọn gutter dày hơn (600) thay vì gutter mỏng hơn (365)');
 {
-  const s2: SplitSettings = { ...S, splitHeight: 2000 };
-  const strip = await makeStrip(800, 3000, [{ x: 200, y: 500, w: 400, h: 1600 }]);
-  const bands = await detectBands(strip, s2);
-  // Tính tay: safe đầu tiên phía trên = 495 < minDistance 800 → reset về 2000 dò xuống → 2100.
-  assertEq(bands, [
-    { x: 0, y: 0, w: 800, h: 2100 },
-    { x: 0, y: 2100, w: 800, h: 900 },
-  ], 'reset dò xuống, band ≥ 40% splitHeight');
-  assertOk(bands.every((b) => b.h >= 800), 'mọi band ≥ minDistance (800px)');
+  const strip = await makeStrip(400, 1000, [
+    { x: 100, y: 0, w: 200, h: 350 }, // khối trước gutter1
+    { x: 100, y: 380, w: 200, h: 170 }, // khối giữa gutter1 (350-380, 30px) và gutter2 (550-650, 100px)
+    { x: 100, y: 650, w: 200, h: 350 }, // khối sau gutter2
+  ]);
+  const gray = await toGray(strip);
+  const runs = computeSafeRuns(gray, S);
+  assertEq(
+    runs,
+    [
+      { start: 350, end: 380 }, // gutter1: thickness 30, center 365
+      { start: 550, end: 650 }, // gutter2: thickness 100, center 600
+    ],
+    'safe run khớp 2 gutter (cả hai ≥ minGutterHeight)',
+  );
+  const cuts = chooseCuts(runs, gray.height, S);
+  assertEq(cuts, [600], 'chọn gutter dày nhất (600, thickness 100) thay vì gutter mỏng hơn (365, thickness 30)');
 }
 
-// ---- Test 3: không có safe-line → fallback target_y ----
-console.log('Test 3: fallback — canvas nhiễu toàn phần (sọc dọc đen/trắng)');
+// ---- T3: canvas nhiễu (mọi hàng unsafe) vượt maxBandHeight → force-cut, không văng ----
+console.log('T3: canvas 400x900 sọc dọc đen/trắng — mọi hàng unsafe, không có gutter nào');
 {
-  // Sọc dọc 1px đen/trắng xen kẽ → mọi hàng đều unsafe (diff 255 > tolerance).
   const stripe = await sharp({
     create: { width: 2, height: 1, channels: 3, background: { r: 0, g: 0, b: 0 } },
   })
@@ -125,29 +141,139 @@ console.log('Test 3: fallback — canvas nhiễu toàn phần (sọc dọc đen/
     .png()
     .toBuffer();
   const noisy = await sharp(stripe, { limitInputPixels: false })
-    .resize(800, 7000, { kernel: 'nearest', fit: 'fill' })
+    .resize(400, 900, { kernel: 'nearest', fit: 'fill' })
     .png()
     .toBuffer();
   const gray = await toGray(noisy);
-  assertOk(!isSafeLine(gray, 3500, S), 'hàng bất kỳ là unsafe');
-  const bands = await detectBands(noisy, S);
-  assertEq(bands, [
-    { x: 0, y: 0, w: 800, h: 5000 },
-    { x: 0, y: 5000, w: 800, h: 2000 },
-  ], 'fallback cắt đúng target_y=5000, không văng');
-  assertEq(findSplitPosition(gray, 5000, 0, S), 5000, 'findSplitPosition fallback = target_y');
+  assertOk(!isSafeLine(gray, 450, S), 'hàng bất kỳ là unsafe (sọc dọc)');
+  const runs = computeSafeRuns(gray, S);
+  assertEq(runs, [], 'không có run an toàn nào');
+  const cuts = chooseCuts(runs, gray.height, S);
+  assertEq(cuts, [700], 'force-cut tại maxBandHeight (700) khi không có gutter, không văng lỗi');
 }
 
-// ---- Test 4: canvas thấp hơn splitHeight → 1 band ----
-console.log('Test 4: canvas 800x1200 → 1 band cả canvas');
+// ---- T4: mọi band ∈ [minBandHeight, maxBandHeight] trừ band cuối ----
+console.log('T4: chuỗi 8 khối cách đều (250px khối + 26px gutter) — mọi band trừ cuối nằm trong [300,700]');
 {
-  const short = await makeStrip(800, 1200, []);
-  const bands = await detectBands(short, S);
-  assertEq(bands, [{ x: 0, y: 0, w: 800, h: 1200 }], '1 band trọn canvas');
+  const unitBlockH = 250;
+  const unitGutterH = 26;
+  const units = 8;
+  const blocks: Array<{ x: number; y: number; w: number; h: number }> = [];
+  let y = 0;
+  for (let i = 0; i < units; i++) {
+    blocks.push({ x: 100, y, w: 200, h: unitBlockH });
+    y += unitBlockH + unitGutterH;
+  }
+  const height = y; // canvas kết thúc ngay sau gutter cuối cùng
+  const strip = await makeStrip(400, height, blocks);
+  const gray = await toGray(strip);
+  const runs = computeSafeRuns(gray, S);
+  const cuts = chooseCuts(runs, height, S);
+  const regions = regionsFromCuts(cuts, 400, height);
+  assertOk(cuts.length > 1, 'chuỗi đủ dài tạo nhiều hơn 1 điểm cắt');
+  assertOk(
+    regions.slice(0, -1).every((r) => r.h >= S.minBandHeight && r.h <= S.maxBandHeight),
+    'mọi band trừ band cuối nằm trong [minBandHeight, maxBandHeight]',
+  );
 }
 
-// ---- Test 5: stitch ----
-console.log('Test 5: stitch 3 slice khác bề rộng');
+// ---- T5: contiguity — regionsFromCuts phủ kín, liền mạch ----
+console.log('T5: regionsFromCuts trên cuts [539,1091,1643] / height 2208 (tái dùng bố cục T4)');
+{
+  const cuts = [539, 1091, 1643];
+  const height = 2208;
+  const regions = regionsFromCuts(cuts, 400, height);
+  assertEq(
+    regions,
+    [
+      { x: 0, y: 0, w: 400, h: 539 },
+      { x: 0, y: 539, w: 400, h: 552 },
+      { x: 0, y: 1091, w: 400, h: 552 },
+      { x: 0, y: 1643, w: 400, h: 565 },
+    ],
+    'regions liền mạch, phủ kín [0,height)',
+  );
+  assertOk(regions.every((r) => r.w === 400 && r.h > 0), 'mọi band w=width, h>0');
+  assertEq(regions.reduce((sum, r) => sum + r.h, 0), height, 'Σh = height');
+  assertOk(
+    regions.every((r, i) => i === 0 || r.y === regions[i - 1].y + regions[i - 1].h),
+    'contiguous: y_i = y_{i-1} + h_{i-1}',
+  );
+}
+
+// ---- T6: gộp band mật độ mực thấp (gần trắng) ----
+console.log('T6: mergeLowInkBands — band giữa/đầu gần trắng gộp vào hàng xóm; band cuối < minBandHeight luôn gộp');
+{
+  // (a) band giữa mật độ thấp → gộp vào band liền TRƯỚC.
+  const width = 400;
+  const height = 1000;
+  const data = new Uint8Array(width * height).fill(255);
+  for (let py = 0; py < 400; py++) for (let px = 0; px < 40; px++) data[py * width + px] = 0; // region1: density 0.1
+  for (let py = 400; py < 500; py++) for (let px = 0; px < 4; px++) data[py * width + px] = 0; // region2: density 0.01 < 0.02
+  for (let py = 500; py < 1000; py++) for (let px = 0; px < 40; px++) data[py * width + px] = 0; // region3: density 0.1
+  const img: GrayImage = { data, width, height };
+  const regions: BeatRegion[] = [
+    { x: 0, y: 0, w: width, h: 400 },
+    { x: 0, y: 400, w: width, h: 100 },
+    { x: 0, y: 500, w: width, h: 500 },
+  ];
+  const merged = mergeLowInkBands(regions, img, S);
+  assertEq(
+    merged,
+    [
+      { x: 0, y: 0, w: width, h: 500 },
+      { x: 0, y: 500, w: width, h: 500 },
+    ],
+    'band giữa gần trắng gộp vào band trước — còn 2 band liền mạch',
+  );
+  assertOk(
+    merged.every((r) => regionInkDensity(img, r) >= S.minInkDensity),
+    'không band nào density < minInkDensity trong output',
+  );
+}
+{
+  // (b) band ĐẦU mật độ thấp (chưa có "trước") → gộp về band liền SAU.
+  const width = 400;
+  const height = 600;
+  const data = new Uint8Array(width * height).fill(255);
+  for (let py = 0; py < 100; py++) for (let px = 0; px < 2; px++) data[py * width + px] = 0; // region1: density 0.005
+  for (let py = 100; py < 600; py++) for (let px = 0; px < 40; px++) data[py * width + px] = 0; // region2: density 0.1
+  const img: GrayImage = { data, width, height };
+  const regions: BeatRegion[] = [
+    { x: 0, y: 0, w: width, h: 100 },
+    { x: 0, y: 100, w: width, h: 500 },
+  ];
+  const merged = mergeLowInkBands(regions, img, S);
+  assertEq(merged, [{ x: 0, y: 0, w: width, h: 600 }], 'band đầu gần trắng gộp về sau — còn 1 band trọn canvas');
+}
+{
+  // (c) band CUỐI ngắn hơn minBandHeight → luôn gộp vào band trước, bất kể mật độ mực.
+  const width = 400;
+  const height = 700;
+  const data = new Uint8Array(width * height).fill(255);
+  for (let py = 0; py < 700; py++) for (let px = 0; px < 40; px++) data[py * width + px] = 0; // mật độ bình thường khắp canvas
+  const img: GrayImage = { data, width, height };
+  const regions: BeatRegion[] = [
+    { x: 0, y: 0, w: width, h: 500 },
+    { x: 0, y: 500, w: width, h: 200 }, // 200 < minBandHeight (300)
+  ];
+  const merged = mergeLowInkBands(regions, img, S);
+  assertEq(merged, [{ x: 0, y: 0, w: width, h: 700 }], 'band cuối < minBandHeight gộp vào band trước dù mật độ mực bình thường');
+}
+
+function regionInkDensity(img: GrayImage, r: BeatRegion): number {
+  let ink = 0;
+  for (let py = r.y; py < r.y + r.h; py++) {
+    const row = py * img.width;
+    for (let px = r.x; px < r.x + r.w; px++) {
+      if (img.data[row + px] < 250) ink++;
+    }
+  }
+  return ink / (r.w * r.h);
+}
+
+// ---- Test stitch ----
+console.log('Test stitch: 3 slice khác bề rộng');
 {
   const slice = (w: number, h: number, c: number) =>
     sharp({ create: { width: w, height: h, channels: 3, background: { r: c, g: c, b: c } } })
@@ -163,8 +289,8 @@ console.log('Test 5: stitch 3 slice khác bề rộng');
   assertEq(px(200, 1300), 240, 'slice 3 tại (200,1300)');
 }
 
-// ---- Test 6: ingestBandItems — upload gộp ảnh dài rồi chia lại thành band ----
-console.log('Test 6: ingestBandItems — 3 trang 600×900 → canvas 2700 → 2 band (SPLIT_HEIGHT 1600)');
+// ---- Test ingest: ingestBandItems với default mới (SPLIT_HEIGHT 1600 → min 960 / max 2240) ----
+console.log('Test ingest: ingestBandItems — 3 trang 600×900 màu phẳng → canvas 600×2700 → 1 gutter liên tục → cắt tại tâm (1350)');
 {
   const page = (c: number) =>
     sharp({ create: { width: 600, height: 900, channels: 3, background: { r: c, g: c, b: c } } })
@@ -178,15 +304,17 @@ console.log('Test 6: ingestBandItems — 3 trang 600×900 → canvas 2700 → 2 
     ],
     1568,
   );
-  // Trang trơn → mọi hàng đều safe → cắt đúng target 1600; canvas 600×2700 → 2 band.
+  // Mỗi trang màu phẳng → mọi hàng đồng nhất theo chiều ngang trên toàn canvas 2700px
+  // → CẢ canvas là một gutter liên tục (≥ minGutterHeight) → chooseCuts cắt đúng 1 lần
+  // tại tâm gutter (1350), không còn theo SPLIT_HEIGHT cố định như thuật toán cũ.
   assertEq(items.map((it) => it.filename), ['band-1.jpg', 'band-2.jpg'], 'tên band đánh số theo thứ tự');
   assertEq(
     items.map((it) => ({ w: it.width, h: it.height, mime: it.mime })),
     [
-      { w: 600, h: 1600, mime: 'image/jpeg' },
-      { w: 600, h: 1100, mime: 'image/jpeg' },
+      { w: 600, h: 1350, mime: 'image/jpeg' },
+      { w: 600, h: 1350, mime: 'image/jpeg' },
     ],
-    'band phủ kín canvas: 1600 + 1100 = 2700',
+    'band phủ kín canvas: 1350 + 1350 = 2700 (cắt tại tâm gutter)',
   );
   const metas = await Promise.all(items.map((it) => sharp(it.buffer).metadata()));
   assertOk(
@@ -195,8 +323,8 @@ console.log('Test 6: ingestBandItems — 3 trang 600×900 → canvas 2700 → 2 
   );
 }
 
-// ---- Test 7: PDF expand vào pipeline ----
-console.log('Test 7: expandPdfs — PDF 2 trang → 2 RawImage đúng thứ tự');
+// ---- Test PDF expand vào pipeline ----
+console.log('Test PDF: expandPdfs — PDF 2 trang → 2 RawImage đúng thứ tự');
 {
   // PDF 2 trang tự dựng (xref offset thật) — như smoke test đã pass.
   const objects: string[] = [];
@@ -238,6 +366,23 @@ console.log('Test 7: expandPdfs — PDF 2 trang → 2 RawImage đúng thứ tự
   );
   const m1 = await sharp(out[0].buffer).metadata();
   assertEq({ w: m1.width, h: m1.height, f: m1.format }, { w: 400, h: 600, f: 'png' }, 'trang 1 render 400x600 png (scale 2)');
+}
+
+// ---- Regression: detectBands end-to-end vẫn giữ bất biến trên bố cục T1 ----
+console.log('Regression: detectBands (full pipeline) trên bố cục T1 — vẫn liền mạch, không cắt xuyên khối');
+{
+  const strip = await makeStrip(400, 1000, [
+    { x: 100, y: 100, w: 200, h: 200 },
+    { x: 100, y: 310, w: 200, h: 90 },
+    { x: 100, y: 460, w: 200, h: 10 },
+  ]);
+  const bands = await detectBands(strip, S);
+  assertOk(bands.every((b) => b.w === 400 && b.h > 0), 'mọi band w=400, h>0');
+  assertEq(bands.reduce((sum, b) => sum + b.h, 0), 1000, 'Σh = height (1000)');
+  assertOk(
+    bands.every((b, i) => i === 0 || b.y === bands[i - 1].y + bands[i - 1].h),
+    'contiguous',
+  );
 }
 
 console.log(failures === 0 ? '\nALL_PASS' : `\nFAILURES: ${failures}`);

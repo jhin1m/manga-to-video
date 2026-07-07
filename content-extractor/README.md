@@ -2,7 +2,7 @@
 
 Tool nội bộ, một người vận hành. Xử lý manga theo hai stage:
 
-**Stage 1:** Nhận chapter (nhiều ảnh đánh số / file zip / file PDF) → **gộp toàn bộ thành một canvas dọc rồi smart-split lại thành band** tại khoảng an toàn (không cắt ngang bubble/chữ) → gọi vision LLM (OpenAI-compatible) → bảng nội dung từng band (`mô tả + thoại + ghi chú`, tiếng Việt) → sửa tay inline → xuất **JSON manifest**.
+**Stage 1:** Nhận chapter (nhiều ảnh đánh số / file zip / file PDF) → **gộp toàn bộ thành một canvas dọc rồi chia lại thành band tại gutter** (khoảng trắng ngang dày) — mỗi band giữ trọn một đơn vị nội dung (nhân vật kèm bong bóng), không cắt ngang bubble/chữ → gọi vision LLM (OpenAI-compatible) → bảng nội dung từng band (`mô tả + thoại + ghi chú`, tiếng Việt) → sửa tay inline → xuất **JSON manifest**.
 
 **Stage 1.5:** Từ chapter hoặc manifest, tạo **storyboard** = danh sách nhịp hình ảnh + lời đọc (dành cho TTS + video tạo Ken Burns). Mỗi band từ lúc upload = 1 nhịp — biên nhịp đã chuẩn từ ingest nên không cần tách/gộp tay. Nhịp thiếu nội dung (chưa chạy Stage 1) bấm **Generate** (vision) hoặc điền tay.
 
@@ -40,16 +40,18 @@ Chuyển sang Z.AI GLM: `OPENAI_BASE_URL=https://api.z.ai/api/paas/v4` + `VISION
 |------|---------|----------|
 | `PDF_SCALE` | Hệ số phóng khi render PDF (1 = 72dpi; 2 = 144dpi đủ nét trước downscale) | `2` |
 | `STRIP_RATIO` | Tỉ lệ cao/rộng ≥ ngưỡng này coi là ảnh dải dọc: downscale chỉ kẹp bề rộng, giữ chiều cao | `2.5` |
-| `SPLIT_HEIGHT` | Chiều cao band mục tiêu khi smart-split (px trên canvas gộp lúc upload). Band = 1 nhịp video, thu về `MAX_EDGE` trước vision → band quá cao làm chữ nát | `1600` |
-| `SCAN_LINE_STEP` | Bước nhảy (px) khi dò safe-line quanh vị trí cắt mục tiêu | `5` |
+| `MIN_GUTTER_HEIGHT` | Run hàng "an toàn" phải dày ≥ ngưỡng này (px) mới đủ tư cách làm điểm cắt (gutter thật, không phải khe hẹp trong panel) | `24` |
+| `MIN_BAND_HEIGHT` | Không cắt trước ngưỡng này (px) — giữ trọn nhân vật + bong bóng. Bỏ trống → `0.6 × SPLIT_HEIGHT` | `960` |
+| `MAX_BAND_HEIGHT` | Buộc cắt khi band vượt ngưỡng này (px) — chặn band quá cao làm chữ nát khi thu về `MAX_EDGE`. Bỏ trống → `1.4 × SPLIT_HEIGHT` | `2240` |
+| `MIN_INK_DENSITY` | Band có mật độ mực (tỉ lệ pixel không-trắng) dưới ngưỡng → gộp vào band liền kề (diệt band gần trắng thừa) | `0.02` |
+| `SPLIT_HEIGHT` | (Tương thích ngược) chỉ còn dùng để suy `MIN_BAND_HEIGHT`/`MAX_BAND_HEIGHT` khi hai biến đó bỏ trống | `1600` |
 | `LINE_TOLERANCE` | Hàng "an toàn" khi chênh lệch 2 pixel liền kề ≤ ngưỡng này (0-255; 25 ≈ 90% sensitivity) | `25` |
-| `MIN_DISTANCE_PCT` | Khoảng cách tối thiểu giữa 2 điểm cắt, tính theo % `SPLIT_HEIGHT` — chặn band quá nhỏ | `40` |
 | `IGNORABLE_BORDER` | Bỏ qua N px sát mép trái/phải khi xét safe-line (viền, watermark dọc mép) | `5` |
 
 ## Luồng sử dụng (Stage 1)
 
 1. Kéo thả ảnh (`1.jpg, 2.jpg, …` — thứ tự đọc theo natural sort tên file) hoặc 1 file `.zip` / `.pdf` (file rác macOS trong zip tự bị lọc).
-2. **Tải lên & xem trước** → tạo job: downscale từng ảnh → **gộp toàn bộ thành một canvas dọc → smart-split thành band** (`band-1.jpg, band-2.jpg, …`) — **chưa gọi vision**; hiện lưới thumbnail band theo thứ tự đọc.
+2. **Tải lên & xem trước** → tạo job: downscale từng ảnh → **gộp toàn bộ thành một canvas dọc → chia band tại gutter** (khoảng trắng ngang dày; `band-1.jpg, band-2.jpg, …`) — **chưa gọi vision**; hiện lưới thumbnail band theo thứ tự đọc. Thừa band? Bấm **✕** trên ô band để xoá (chỉ khi chưa chạy).
 3. Chỉnh **Nhịp** (req/phút) nếu cần rồi bấm **Chạy tất cả** → vision cho từng band, theo dõi tiến độ realtime (SSE, có poll dự phòng). Request được giãn nhịp để tránh lỗi 429.
 4. Band lỗi hiện badge đỏ + nút **Thử lại** (lỗi từng band được cô lập, không làm sập job).
 5. **Sửa** nội dung inline → **Lưu**.
@@ -65,6 +67,7 @@ Chuyển sang Z.AI GLM: `OPENAI_BASE_URL=https://api.z.ai/api/paas/v4` + `VISION
    - **Region**: input số x/y/w/h (hoặc tick "Cả trang").
    - **Generate ✨**: gọi vision cho riêng nhịp đó (crop vùng nhịp → mô tả + thoại) — dùng khi chưa chạy Stage 1, khi band lỗi, hoặc muốn soạn lại từ ảnh.
    - **Reorder** (▲▼): xếp thứ tự nhịp.
+   - **Xoá**: bỏ hẳn một nhịp khỏi storyboard (re-order phần còn lại; chỉ khi không đang compose).
 4. Export → tải `storyboard-<jobId>.json` (manifest v1, hợp đồng cho TTS/video).
 5. Import: upload manifest + đúng bộ ảnh gốc → ingest gộp + chia band tái lập y phiên export (cần cùng `MAX_EDGE`/`SPLIT_HEIGHT`…).
 
@@ -80,6 +83,7 @@ Có thể tạo storyboard **ngay từ phase xem trước** (chưa chạy Stage 
 | GET | `/api/jobs/{id}/stream` | SSE tiến độ (snapshot + real-time updates) |
 | GET | `/api/jobs/{id}/export` | manifest JSON (attachment) |
 | PATCH | `/api/jobs/{id}/items/{i}` | sửa `{description?, dialogue?, note?}` |
+| DELETE | `/api/jobs/{id}/items/{i}` | xoá band (re-index phần còn lại). `404` index ngoài biên, `409` khi job đang chạy |
 | GET | `/api/jobs/{id}/items/{i}/image` | thumbnail JPEG (downscale) |
 | POST | `/api/jobs/{id}/items/{i}/retry` | vision lại cho 1 item |
 
@@ -92,6 +96,7 @@ Có thể tạo storyboard **ngay từ phase xem trước** (chưa chạy Stage 
 | GET | `/api/jobs/{id}/storyboard/stream` | SSE tiến độ compose |
 | GET | `/api/jobs/{id}/storyboard/export` | storyboard manifest JSON (v1) |
 | PATCH | `/api/jobs/{id}/storyboard/beats/{beatId}` | sửa beat `{narration?, region?, order?}` (region chuẩn: x/y ≥ 0, w/h ≥ 1, trong biên ảnh nguồn) |
+| DELETE | `/api/jobs/{id}/storyboard/beats/{beatId}` | xoá nhịp (re-order phần còn lại). `404` beat/storyboard không có, `409` khi đang compose |
 | POST | `/api/jobs/{id}/storyboard/beats/{beatId}/generate` | **Generate bằng vision**: crop vùng nhịp → mô tả + thoại → narration (lỗi cô lập vào beat) |
 | POST | `/api/jobs/{id}/storyboard/beats/{beatId}/retry` | compose lại từ content Stage 1 (không gọi vision) |
 | GET | `/api/jobs/{id}/storyboard/beats/{beatId}/crop` | preview crop JPEG theo region hiện tại |
@@ -165,13 +170,13 @@ Item lỗi chưa retry: `"error": "…"` + `content: null`.
 - `lib/pdf.ts` — render PDF → Buffer ảnh dùng `pdf-to-img` (Node 24).
 - `lib/source-kind.ts` — ngưỡng `STRIP_RATIO` cho nhánh downscale ảnh dải dọc.
 - `lib/stitch.ts` — nối các ảnh thành một canvas dọc (căn giữa slice hẹp).
-- `lib/smart-split.ts` — port SmartStitch (jhin1m/manhwa-sticher): detect safe-line, chia band né bubble/SFX.
+- `lib/smart-split.ts` — cắt band theo NGỮ CẢNH (kế thừa primitive safe-line của SmartStitch, jhin1m/manhwa-sticher): dò gutter (khoảng trắng dày) làm điểm cắt, bỏ qua khe hẹp nhân vật↔bong bóng, gộp band non nội dung.
 - `lib/narration.ts` — compose narration template từ content Stage 1; nhánh vision (Generate) crop vùng nhịp → describeImage; rev-guard per-beat.
 - `lib/storyboard-store.ts` — in-memory storyboard + working image (Map per-jobId, sống sót HMR).
 
 **Routes & UI:**
-- `app/api/jobs/**` — 8 route Stage 1 (POST/GET/PATCH/POST retry).
-- `app/api/jobs/{id}/storyboard**` — 9 route Stage 1.5 (POST create / PATCH beat / POST generate-retry-reorder / GET crop-export-stream-working).
+- `app/api/jobs/**` — route Stage 1 (POST/GET/PATCH/DELETE item/POST retry).
+- `app/api/jobs/{id}/storyboard**` — route Stage 1.5 (POST create / PATCH+DELETE beat / POST generate-retry-reorder / GET crop-export-stream-working).
 - `app/api/storyboard/import` — nạp lại từ manifest + ảnh.
 - `app/page.tsx` — UI một trang: upload (gộp + chia band) → xem trước → [Chạy Stage 1 | Tạo storyboard] → progress → edit/export.
 - `app/storyboard/[jobId]/page.tsx` — UI storyboard: danh sách nhịp → chỉnh narration/region, Generate ✨ per-beat, reorder → export/import.
@@ -182,21 +187,22 @@ Item lỗi chưa retry: `"error": "…"` + `content: null`.
 ```bash
 npm run test:unit
 ```
-Kiểm tra downscale/bound, smart-split band detection, ingest gộp + chia band, narration compose (42 assert).
+Kiểm tra downscale/bound, chia band theo gutter (giữ nhân vật+bong bóng, gộp band non), xoá band/nhịp (re-index/re-order), ingest gộp + chia band, narration compose (73 assert).
 
 **E2E test** (đầu tào cuối):
 ```bash
 npm run mock:vision   # Mock OpenAI vision (port 3106)
 PORT=3105 OPENAI_API_KEY=mock-key OPENAI_BASE_URL=http://localhost:3106/v1 \
 VISION_MODEL=mock-vision VISION_RPM=600 SPLIT_HEIGHT=1000 npm run dev
-npm run test:e2e      # upload band/Stage 1/storyboard/Generate/reorder/import/export/PDF (55 assert)
+npm run test:e2e      # upload band/Stage 1/storyboard/Generate/reorder/xoá band+nhịp/import/export/PDF (69 assert)
 ```
 
 Test scripts: `content-extractor/scripts/` (`verify-ingest.mts`, `verify-banding.mts`, `verify-narration.mts`, `mock-openai-vision.mjs`, `e2e-storyboard.mts`).
 
 ## Known Limitations (v1, ghi nhận cho Stage 2)
 
-- **Import phụ thuộc env:** Band tái lập từ ảnh gốc — cần cùng `MAX_EDGE`/`SPLIT_HEIGHT`/settings smart-split như phiên export, khác đi là `sourceIndex` lệch (được validate, báo 400). Cân nhắc nhúng settings vào manifest v2.
+- **Import phụ thuộc env:** Band tái lập từ ảnh gốc — cần cùng `MAX_EDGE` + settings cắt band (`MIN_GUTTER_HEIGHT`/`MIN_BAND_HEIGHT`/`MAX_BAND_HEIGHT`/`MIN_INK_DENSITY`…) như phiên export, khác đi là `sourceIndex` lệch (được validate, báo 400). Cân nhắc nhúng settings vào manifest v2.
 - **Memory canvas:** Mỗi upload stitch toàn bộ chapter thành một canvas rồi raw-decode khi smart-split — chapter rất dài tốn RAM tạm thời (dev tool chấp nhận, ghi chú).
+- **Xoá band sau khi đã tạo storyboard:** Storyboard là snapshot lúc tạo — xoá band ở lưới upload KHÔNG cập nhật ngược storyboard đã có (working buffer giữ bằng tham chiếu nên không lỗi). Bấm "Tạo storyboard" lại để đồng bộ.
 - **PDF trong zip:** Bỏ qua (chỉ nhận PDF upload trực tiếp).
 - **UI beat:** Kéo-thả handle chưa có — dùng input số x/y/w/h.
