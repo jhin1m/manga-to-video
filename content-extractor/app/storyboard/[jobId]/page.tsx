@@ -2,16 +2,26 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import type { BeatDTO, JobProgress, StoryboardDTO } from '@/lib/schema';
+import { toast } from 'sonner';
+import { ArrowDown, ArrowUp, ArrowRight, Sparkles, Trash2 } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { Progress } from '@/components/ui/progress';
+import { Textarea } from '@/components/ui/textarea';
+import { PageShell } from '@/components/page-shell';
+import { useProject } from '@/components/project-context';
+import { RegionCropper } from '@/components/region-cropper';
+import { cn } from '@/lib/utils';
+import type { BeatDTO, BeatRegion, JobProgress, StoryboardDTO } from '@/lib/schema';
 
-// Draft sửa nhịp: region giữ dạng chuỗi khi gõ, parse lúc Lưu.
+// Trang storyboard master–detail: trái = list nhịp gọn (thumbnail + reorder), phải = chi
+// tiết nhịp đang chọn (chọn vùng kéo-thả + narration + Generate + xoá). Kịch bản AI ở
+// route riêng /script/{jobId}.
+
 interface BeatDraft {
   narration: string;
-  fullPage: boolean;
-  x: string;
-  y: string;
-  w: string;
-  h: string;
+  region: BeatRegion | null;
 }
 
 async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
@@ -39,25 +49,18 @@ function phaseLabel(p: JobProgress): string {
   }
 }
 
-// Icon AI (sparkles) cho nút Generate.
-function SparklesIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden className="h-3.5 w-3.5">
-      <path d="M12 2l1.9 5.6L19.5 9.5l-5.6 1.9L12 17l-1.9-5.6L4.5 9.5l5.6-1.9L12 2z" />
-      <path d="M19 13.5l1 2.9 2.9 1-2.9 1-1 2.9-1-2.9-2.9-1 2.9-1 1-2.9z" />
-    </svg>
-  );
-}
-
 export default function StoryboardPage() {
   const { jobId } = useParams<{ jobId: string }>();
   const router = useRouter();
+  const { publish } = useProject();
   const [dto, setDto] = useState<StoryboardDTO | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
-  const [drafts, setDrafts] = useState<Record<string, BeatDraft>>({});
-  const [rowBusy, setRowBusy] = useState<Set<string>>(new Set());
+  const [loadErrorMsg, setLoadErrorMsg] = useState<string | null>(null);
   const [selectedBeat, setSelectedBeat] = useState<string | null>(null);
+  const [draft, setDraft] = useState<BeatDraft | null>(null);
+  const [draftBeatId, setDraftBeatId] = useState<string | null>(null); // draft đang thuộc nhịp nào
+  const [draftTouched, setDraftTouched] = useState(false); // người dùng đã gõ/kéo lên draft này chưa
+  const [rowBusy, setRowBusy] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [rev, setRev] = useState(0); // cache-buster cho crop preview sau khi region/beat đổi
   const esRef = useRef<EventSource | null>(null);
@@ -70,14 +73,23 @@ export default function StoryboardPage() {
     }
   }
 
+  function publishReadiness(next: StoryboardDTO) {
+    publish({
+      jobId: next.jobId,
+      hasStoryboard: true,
+      storyboardDone: next.progress.phase === 'done' && next.beats.length > 0,
+    });
+  }
+
   async function refresh(): Promise<StoryboardDTO | null> {
     try {
       const next = await fetchJSON<StoryboardDTO>(`/api/jobs/${jobId}/storyboard`);
       setDto(next);
       setRev((r) => r + 1);
+      publishReadiness(next);
       return next;
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không tải được storyboard');
+      toast.error(err instanceof Error ? err.message : 'Không tải được storyboard');
       return null;
     }
   }
@@ -127,13 +139,14 @@ export default function StoryboardPage() {
         const first = await fetchJSON<StoryboardDTO>(`/api/jobs/${jobId}/storyboard`);
         if (cancelled) return;
         setDto(first);
+        publishReadiness(first);
         if (first.progress.phase === 'queued' || first.progress.phase === 'processing') {
           attachStream();
         }
       } catch (err) {
         if (cancelled) return;
         setNotFound(true);
-        setError(err instanceof Error ? err.message : 'Không tải được storyboard');
+        setLoadErrorMsg(err instanceof Error ? err.message : 'Không tải được storyboard');
       }
     })();
     return () => {
@@ -143,6 +156,35 @@ export default function StoryboardPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- chỉ chạy theo jobId
   }, [jobId]);
+
+  const beats = dto ? [...dto.beats].sort((a, b) => a.order - b.order) : [];
+  const selected = beats.find((b) => b.id === selectedBeat) ?? beats[0] ?? null;
+
+  // Draft thuộc về nhịp đang chọn: đổi nhịp → nạp lại draft từ dữ liệu server (pattern
+  // "adjust state during render" — không cần effect). Sửa dở rồi chọn nhịp khác = bỏ bản
+  // nháp, hành vi master-detail tiêu chuẩn.
+  if (selected && draftBeatId !== selected.id) {
+    setDraftBeatId(selected.id);
+    setDraft({ narration: selected.narration, region: selected.region });
+    setDraftTouched(false);
+  }
+  // Server cập nhật nhịp đang chọn (vd compose xong đổ narration về) mà người dùng CHƯA
+  // chạm vào draft → đồng bộ theo server, tránh "Lưu nhịp" đè narration mới bằng bản cũ/rỗng.
+  if (
+    selected &&
+    draftBeatId === selected.id &&
+    !draftTouched &&
+    draft &&
+    (draft.narration !== selected.narration ||
+      JSON.stringify(draft.region) !== JSON.stringify(selected.region))
+  ) {
+    setDraft({ narration: selected.narration, region: selected.region });
+  }
+  if (!selected && draftBeatId !== null) {
+    setDraftBeatId(null);
+    setDraft(null);
+    setDraftTouched(false);
+  }
 
   function setBeatBusy(beatId: string, on: boolean) {
     setRowBusy((prev) => {
@@ -160,70 +202,46 @@ export default function StoryboardPage() {
     setRev((r) => r + 1);
   }
 
-  function startEdit(beat: BeatDTO) {
-    const working = dto?.working.find((w) => w.sourceIndex === beat.sourceIndex);
-    const base = beat.region ?? { x: 0, y: 0, w: working?.width ?? 0, h: working?.height ?? 0 };
-    setDrafts((prev) => ({
-      ...prev,
-      [beat.id]: {
-        narration: beat.narration,
-        fullPage: beat.region === null,
-        x: String(base.x),
-        y: String(base.y),
-        w: String(base.w),
-        h: String(base.h),
-      },
-    }));
-  }
-
-  function cancelEdit(beatId: string) {
-    setDrafts((prev) => {
-      const next = { ...prev };
-      delete next[beatId];
-      return next;
-    });
-  }
-
-  async function saveEdit(beatId: string) {
-    const draft = drafts[beatId];
-    if (!draft) return;
-    const region = draft.fullPage
-      ? null
-      : {
-          x: Number(draft.x),
-          y: Number(draft.y),
-          w: Number(draft.w),
-          h: Number(draft.h),
-        };
-    setBeatBusy(beatId, true);
-    setError(null);
+  async function saveEdit() {
+    if (!selected || !draft) return;
+    setBeatBusy(selected.id, true);
     try {
-      const updated = await fetchJSON<BeatDTO>(`/api/jobs/${jobId}/storyboard/beats/${beatId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ narration: draft.narration, region }),
-      });
+      const updated = await fetchJSON<BeatDTO>(
+        `/api/jobs/${jobId}/storyboard/beats/${selected.id}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ narration: draft.narration, region: draft.region }),
+        },
+      );
       replaceBeat(updated);
-      cancelEdit(beatId);
+      setDraft({ narration: updated.narration, region: updated.region });
+      setDraftTouched(false);
+      publish({ dirty: true });
+      toast.success(`Đã lưu nhịp ${updated.order + 1}.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không lưu được nhịp');
+      toast.error(err instanceof Error ? err.message : 'Không lưu được nhịp');
     } finally {
-      setBeatBusy(beatId, false);
+      setBeatBusy(selected.id, false);
     }
   }
 
   // Generate bằng AI vision: crop vùng nhịp → mô tả + thoại → narration.
   async function generateBeat(beatId: string) {
     setBeatBusy(beatId, true);
-    setError(null);
     try {
       const updated = await fetchJSON<BeatDTO>(
         `/api/jobs/${jobId}/storyboard/beats/${beatId}/generate`,
         { method: 'POST' },
       );
       replaceBeat(updated);
+      if (draftBeatId === beatId) {
+        setDraft({ narration: updated.narration, region: updated.region });
+        setDraftTouched(false);
+      }
+      publish({ dirty: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Generate thất bại');
+      toast.error(err instanceof Error ? err.message : 'Generate thất bại');
     } finally {
       setBeatBusy(beatId, false);
     }
@@ -233,7 +251,6 @@ export default function StoryboardPage() {
   // (route tự trả 409), disabled thêm khi đang running để khỏi race với compose đang bay.
   async function removeBeat(beatId: string) {
     setBeatBusy(beatId, true);
-    setError(null);
     try {
       const next = await fetchJSON<StoryboardDTO>(
         `/api/jobs/${jobId}/storyboard/beats/${beatId}`,
@@ -241,8 +258,11 @@ export default function StoryboardPage() {
       );
       setDto(next);
       setRev((r) => r + 1);
+      setSelectedBeat(null); // về nhịp đầu danh sách mới
+      publishReadiness(next);
+      publish({ dirty: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không xoá được nhịp');
+      toast.error(err instanceof Error ? err.message : 'Không xoá được nhịp');
     } finally {
       setBeatBusy(beatId, false);
     }
@@ -251,7 +271,6 @@ export default function StoryboardPage() {
   // reorder trả về DTO đầy đủ (thao tác đổi nhiều nhịp).
   async function beatOp(path: string, body: Record<string, unknown>, beatId: string) {
     setBeatBusy(beatId, true);
-    setError(null);
     try {
       const next = await fetchJSON<StoryboardDTO>(`/api/jobs/${jobId}/storyboard/beats/${path}`, {
         method: 'POST',
@@ -260,8 +279,9 @@ export default function StoryboardPage() {
       });
       setDto(next);
       setRev((r) => r + 1);
+      publish({ dirty: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Thao tác thất bại');
+      toast.error(err instanceof Error ? err.message : 'Thao tác thất bại');
     } finally {
       setBeatBusy(beatId, false);
     }
@@ -269,16 +289,19 @@ export default function StoryboardPage() {
 
   async function recreate() {
     setBusy(true);
-    setError(null);
     try {
       const next = await fetchJSON<StoryboardDTO>(`/api/jobs/${jobId}/storyboard`, {
         method: 'POST',
       });
       setDto(next);
-      setDrafts({});
+      setSelectedBeat(null);
+      setDraftBeatId(null);
+      setDraft(null);
+      setDraftTouched(false);
+      publish({ dirty: true });
       attachStream();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không tạo lại được storyboard');
+      toast.error(err instanceof Error ? err.message : 'Không tạo lại được storyboard');
     } finally {
       setBusy(false);
     }
@@ -286,311 +309,245 @@ export default function StoryboardPage() {
 
   if (notFound) {
     return (
-      <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-8">
-        <h1 className="text-2xl font-bold">Storyboard</h1>
-        <p className="mt-4 text-sm text-red-600 dark:text-red-400">
-          {error ?? 'Chưa có storyboard cho job này.'}
+      <PageShell title="Storyboard">
+        <p className="text-sm text-destructive">{loadErrorMsg ?? 'Chưa có storyboard cho job này.'}</p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Store nằm trong RAM — nếu server vừa khởi động lại, dùng nút &quot;Mở project&quot;
+          (.mtvproj) trên thanh công cụ để nạp lại phiên đã lưu.
         </p>
-        <p className="mt-2 text-sm text-neutral-500">
-          Store nằm trong RAM — nếu server vừa khởi động lại, hãy nạp lại từ manifest + ảnh ở trang
-          chính.
-        </p>
-        <button
-          onClick={() => router.push('/')}
-          className="mt-4 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500"
-        >
+        <Button className="mt-4" onClick={() => router.push('/')}>
           Về trang chính
-        </button>
-      </main>
+        </Button>
+      </PageShell>
     );
   }
 
   if (!dto) {
     return (
-      <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-8">
-        <p className="text-sm text-neutral-500">Đang tải storyboard…</p>
-      </main>
+      <PageShell title="Storyboard">
+        <p className="text-sm text-muted-foreground">Đang tải storyboard…</p>
+      </PageShell>
     );
   }
 
   const { progress } = dto;
   const running = progress.phase === 'queued' || progress.phase === 'processing';
   const pct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
-  const stripWorking = dto.sourceKind === 'strip' ? dto.working[0] : undefined;
-  const beats = [...dto.beats].sort((a, b) => a.order - b.order);
+  const ready = progress.phase === 'done' && beats.length > 0;
+  const selectedWorking = selected
+    ? dto.working.find((w) => w.sourceIndex === selected.sourceIndex)
+    : undefined;
+  const selectedBusy = selected ? rowBusy.has(selected.id) : false;
+  const dirtyDraft =
+    draftTouched &&
+    selected !== null &&
+    draft !== null &&
+    (draft.narration !== selected.narration ||
+      JSON.stringify(draft.region) !== JSON.stringify(selected.region));
 
   return (
-    <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold">Storyboard</h1>
-          <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
-            {beats.length} nhịp — mỗi nhịp một ảnh đã chia lúc upload. Sửa lời đọc + vùng hình
-            (hoặc bấm Generate) rồi Export cho Stage 2 (TTS/video).
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={recreate}
-            disabled={busy || running}
-            className="rounded-lg border border-neutral-300 px-4 py-2 text-sm font-medium hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
-          >
+    <PageShell
+      title="Storyboard"
+      subtitle={`${beats.length} nhịp — chọn nhịp bên trái, chỉnh vùng hình + lời đọc bên phải. Lưu cả phiên bằng "Lưu project".`}
+      wide
+      actions={
+        <>
+          <Button variant="outline" onClick={recreate} disabled={busy || running}>
             {busy ? 'Đang tạo…' : 'Tạo lại storyboard'}
-          </button>
-          <a
-            href={`/api/jobs/${jobId}/storyboard/export`}
-            download
-            className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500"
-          >
-            Export storyboard
-          </a>
-          <button
-            onClick={() => router.push('/')}
-            className="rounded-lg border border-neutral-300 px-4 py-2 text-sm font-medium hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
-          >
-            Trang chính
-          </button>
-        </div>
-      </div>
+          </Button>
+          <Button onClick={() => router.push(`/script/${jobId}`)} disabled={!ready}>
+            Kịch bản
+            <ArrowRight data-icon="inline-end" />
+          </Button>
+        </>
+      }
+    >
+      {/* Tiến độ compose */}
+      <Card className="py-4">
+        <CardContent className="px-4">
+          <span className="text-sm font-medium">{phaseLabel(progress)}</span>
+          <Progress
+            value={pct}
+            className={cn(
+              'mt-3',
+              progress.phase === 'failed' && '[&>[data-slot=progress-indicator]]:bg-destructive',
+            )}
+          />
+        </CardContent>
+      </Card>
 
-      {error && (
-        <div className="mt-4 flex items-start justify-between gap-3 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
-          <span>{error}</span>
-          <button onClick={() => setError(null)} className="shrink-0 font-medium underline">
-            Đóng
-          </button>
+      {beats.length === 0 ? (
+        <p className="mt-6 text-sm italic text-muted-foreground">
+          {running ? 'Đang chia band…' : 'Chưa có nhịp nào.'}
+        </p>
+      ) : (
+        <div className="mt-6 flex flex-col gap-6 lg:flex-row">
+          {/* Cột trái: list nhịp gọn */}
+          <aside className="w-full shrink-0 lg:w-72">
+            <ol className="flex gap-2 overflow-x-auto lg:block lg:max-h-[75vh] lg:space-y-2 lg:overflow-y-auto lg:pr-1">
+              {beats.map((beat, i) => {
+                const isSelected = selected?.id === beat.id;
+                const isBusy = rowBusy.has(beat.id);
+                return (
+                  <li key={beat.id} className="w-40 shrink-0 lg:w-auto">
+                    <Card
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedBeat(beat.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          setSelectedBeat(beat.id);
+                        }
+                      }}
+                      className={cn(
+                        'cursor-pointer gap-0 py-2 shadow-none transition-colors hover:bg-muted/60',
+                        isSelected && 'border-primary bg-muted/40',
+                      )}
+                    >
+                      <CardContent className="flex items-center gap-2.5 px-2.5">
+                        {/* eslint-disable-next-line @next/next/no-img-element -- ảnh từ store in-memory */}
+                        <img
+                          src={`${beat.cropUrl}?v=${rev}`}
+                          alt={`Nhịp ${beat.order + 1}`}
+                          className="h-14 w-12 shrink-0 rounded border object-cover"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="flex items-center gap-1.5 text-xs font-semibold">
+                            Nhịp {beat.order + 1}
+                            {beat.error && <span className="size-1.5 rounded-full bg-destructive" title={beat.error} />}
+                          </p>
+                          <p className="truncate text-xs text-muted-foreground">
+                            {beat.narration || (beat.error ? 'Lỗi — cần xử lý' : 'Chưa có lời đọc')}
+                          </p>
+                        </div>
+                        <div
+                          className="flex flex-col"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <Button
+                            variant="ghost"
+                            size="icon-xs"
+                            aria-label="Chuyển nhịp lên"
+                            disabled={isBusy || running || i === 0}
+                            onClick={() => beatOp('reorder', { beatId: beat.id, to: beat.order - 1 }, beat.id)}
+                          >
+                            <ArrowUp />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon-xs"
+                            aria-label="Chuyển nhịp xuống"
+                            disabled={isBusy || running || i === beats.length - 1}
+                            onClick={() => beatOp('reorder', { beatId: beat.id, to: beat.order + 1 }, beat.id)}
+                          >
+                            <ArrowDown />
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </li>
+                );
+              })}
+            </ol>
+          </aside>
+
+          {/* Cột phải: chi tiết nhịp đang chọn */}
+          {selected && draft && (
+            <section className="min-w-0 flex-1">
+              <Card className="py-4">
+                <CardContent className="space-y-4 px-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="secondary">Nhịp {selected.order + 1}</Badge>
+                    <span className="text-xs text-muted-foreground">
+                      ảnh nguồn #{selected.sourceIndex}
+                      {selected.durationHint !== undefined && ` · ~${selected.durationHint}s`}
+                    </span>
+                    {selected.error && <Badge variant="destructive">Lỗi: {selected.error}</Badge>}
+                  </div>
+
+                  {selectedWorking ? (
+                    <RegionCropper
+                      imageUrl={selectedWorking.imageUrl}
+                      width={selectedWorking.width}
+                      height={selectedWorking.height}
+                      region={draft.region}
+                      disabled={selectedBusy}
+                      onChange={(region) => {
+                        setDraftTouched(true);
+                        setDraft((d) => (d ? { ...d, region } : d));
+                      }}
+                      maxHeightClass={dto.sourceKind === 'strip' ? 'max-h-[55vh]' : 'max-h-[60vh]'}
+                      contextRegions={beats
+                        .filter(
+                          (b) =>
+                            b.id !== selected.id &&
+                            b.sourceIndex === selected.sourceIndex &&
+                            b.region !== null,
+                        )
+                        .map((b) => ({ label: String(b.order + 1), region: b.region! }))}
+                    />
+                  ) : (
+                    <p className="text-sm text-destructive">
+                      Không tìm thấy ảnh working cho nhịp này.
+                    </p>
+                  )}
+
+                  <label className="block text-xs font-medium text-muted-foreground">
+                    Lời đọc (narration)
+                    <Textarea
+                      value={draft.narration}
+                      rows={4}
+                      className="mt-1"
+                      placeholder={
+                        running ? 'Đang soạn…' : 'Chưa có lời đọc — bấm Generate hoặc điền tay.'
+                      }
+                      onChange={(e) => {
+                        setDraftTouched(true);
+                        setDraft((d) => (d ? { ...d, narration: e.target.value } : d));
+                      }}
+                    />
+                  </label>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button onClick={saveEdit} disabled={selectedBusy || !dirtyDraft}>
+                      {selectedBusy ? 'Đang lưu…' : 'Lưu nhịp'}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      disabled={selectedBusy || !dirtyDraft}
+                      onClick={() => {
+                        setDraft({ narration: selected.narration, region: selected.region });
+                        setDraftTouched(false);
+                      }}
+                    >
+                      Hoàn tác
+                    </Button>
+                    <Button
+                      variant="ai"
+                      disabled={selectedBusy || running}
+                      title="Generate lời đọc từ ảnh bằng AI vision"
+                      onClick={() => generateBeat(selected.id)}
+                    >
+                      <Sparkles data-icon="inline-start" />
+                      {selectedBusy ? 'Đang generate…' : 'Generate'}
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      className="ml-auto"
+                      disabled={selectedBusy || running}
+                      onClick={() => removeBeat(selected.id)}
+                    >
+                      <Trash2 data-icon="inline-start" />
+                      Xoá nhịp
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </section>
+          )}
         </div>
       )}
-
-      {/* Tiến độ compose */}
-      <section className="mt-4 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-        <span className="text-sm font-medium">{phaseLabel(progress)}</span>
-        <div className="mt-3 h-2 overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
-          <div
-            className={`h-full rounded-full transition-all ${
-              progress.phase === 'failed' ? 'bg-red-500' : 'bg-blue-600'
-            }`}
-            style={{ width: `${pct}%` }}
-          />
-        </div>
-      </section>
-
-      <div className="mt-6 flex flex-col gap-6 lg:flex-row">
-        {/* Canvas dải dọc + overlay band (chỉ strip) */}
-        {stripWorking && (
-          <aside className="lg:w-1/4">
-            <p className="mb-2 text-xs font-medium text-neutral-500">
-              Canvas {stripWorking.width}×{stripWorking.height}px — vạch màu = band
-            </p>
-            <div className="max-h-[75vh] overflow-y-auto rounded border border-neutral-200 dark:border-neutral-800">
-              <div className="relative">
-                {/* eslint-disable-next-line @next/next/no-img-element -- ảnh từ store in-memory */}
-                <img src={`${stripWorking.imageUrl}?v=${rev}`} alt="Canvas dải dọc" className="w-full" />
-                {beats.map(
-                  (b) =>
-                    b.region && (
-                      <button
-                        key={b.id}
-                        onClick={() => setSelectedBeat(b.id)}
-                        title={`Nhịp ${b.order + 1}`}
-                        className={`absolute left-0 w-full border-2 text-left text-[10px] font-bold ${
-                          selectedBeat === b.id
-                            ? 'border-blue-500 bg-blue-500/20 text-blue-700'
-                            : 'border-amber-400/70 bg-transparent text-amber-600'
-                        }`}
-                        style={{
-                          top: `${(b.region.y / stripWorking.height) * 100}%`,
-                          height: `${(b.region.h / stripWorking.height) * 100}%`,
-                        }}
-                      >
-                        <span className="ml-1">{b.order + 1}</span>
-                      </button>
-                    ),
-                )}
-              </div>
-            </div>
-          </aside>
-        )}
-
-        {/* Danh sách nhịp */}
-        <section className="min-w-0 flex-1">
-          {beats.length === 0 && (
-            <p className="text-sm italic text-neutral-400">
-              {running ? 'Đang chia band…' : 'Chưa có nhịp nào.'}
-            </p>
-          )}
-          <ol className="space-y-4">
-            {beats.map((beat, i) => {
-              const draft = drafts[beat.id];
-              const isBusy = rowBusy.has(beat.id);
-              const working = dto.working.find((w) => w.sourceIndex === beat.sourceIndex);
-              return (
-                <li
-                  key={beat.id}
-                  className={`flex gap-4 rounded-lg border p-4 ${
-                    selectedBeat === beat.id
-                      ? 'border-blue-400 dark:border-blue-600'
-                      : 'border-neutral-200 dark:border-neutral-800'
-                  }`}
-                  onClick={() => setSelectedBeat(beat.id)}
-                >
-                  <div className="w-32 shrink-0 sm:w-40">
-                    {/* eslint-disable-next-line @next/next/no-img-element -- ảnh từ store in-memory */}
-                    <img
-                      src={`${beat.cropUrl}?v=${rev}`}
-                      alt={`Nhịp ${beat.order + 1}`}
-                      className="w-full rounded border border-neutral-200 object-contain dark:border-neutral-800"
-                    />
-                    <p className="mt-1 text-center text-xs text-neutral-500">
-                      {beat.region
-                        ? `y ${beat.region.y}–${beat.region.y + beat.region.h}`
-                        : 'Cả trang'}
-                    </p>
-                  </div>
-
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="rounded bg-neutral-100 px-2 py-0.5 text-xs font-bold dark:bg-neutral-800">
-                        Nhịp {beat.order + 1}
-                      </span>
-                      <span className="text-xs text-neutral-500">
-                        ảnh nguồn #{beat.sourceIndex}
-                        {beat.durationHint !== undefined && ` · ~${beat.durationHint}s`}
-                      </span>
-                      {beat.error && (
-                        <span className="rounded bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700 dark:bg-red-950 dark:text-red-300">
-                          Lỗi: {beat.error}
-                        </span>
-                      )}
-                    </div>
-
-                    {draft ? (
-                      <div className="mt-2 space-y-2" onClick={(e) => e.stopPropagation()}>
-                        <label className="block text-xs font-medium text-neutral-500">
-                          Lời đọc (narration)
-                          <textarea
-                            value={draft.narration}
-                            onChange={(e) =>
-                              setDrafts((prev) => ({
-                                ...prev,
-                                [beat.id]: { ...draft, narration: e.target.value },
-                              }))
-                            }
-                            rows={4}
-                            className="mt-1 w-full rounded border border-neutral-300 bg-transparent p-2 text-sm dark:border-neutral-700"
-                          />
-                        </label>
-                        <div className="flex flex-wrap items-end gap-2 text-xs font-medium text-neutral-500">
-                          <label className="flex items-center gap-1.5">
-                            <input
-                              type="checkbox"
-                              checked={draft.fullPage}
-                              onChange={(e) =>
-                                setDrafts((prev) => ({
-                                  ...prev,
-                                  [beat.id]: { ...draft, fullPage: e.target.checked },
-                                }))
-                              }
-                            />
-                            Cả trang
-                          </label>
-                          {!draft.fullPage &&
-                            (['x', 'y', 'w', 'h'] as const).map((k) => (
-                              <label key={k} className="flex items-center gap-1">
-                                {k}
-                                <input
-                                  type="number"
-                                  min={0}
-                                  value={draft[k]}
-                                  onChange={(e) =>
-                                    setDrafts((prev) => ({
-                                      ...prev,
-                                      [beat.id]: { ...draft, [k]: e.target.value },
-                                    }))
-                                  }
-                                  className="w-20 rounded border border-neutral-300 bg-transparent px-1.5 py-1 dark:border-neutral-700"
-                                />
-                              </label>
-                            ))}
-                          {working && (
-                            <span className="text-neutral-400">
-                              (biên {working.width}×{working.height})
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => saveEdit(beat.id)}
-                            disabled={isBusy}
-                            className="rounded bg-blue-600 px-3 py-1 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-50"
-                          >
-                            {isBusy ? 'Đang lưu…' : 'Lưu'}
-                          </button>
-                          <button
-                            onClick={() => cancelEdit(beat.id)}
-                            disabled={isBusy}
-                            className="rounded border border-neutral-300 px-3 py-1 text-xs font-medium hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
-                          >
-                            Hủy
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="mt-2" onClick={(e) => e.stopPropagation()}>
-                        {beat.narration ? (
-                          <p className="whitespace-pre-wrap text-sm">{beat.narration}</p>
-                        ) : (
-                          <p className="text-xs italic text-neutral-400">
-                            {beat.error ? 'Chưa có lời đọc — sửa tay hoặc bấm Generate.' : running ? 'Đang soạn…' : 'Chưa có lời đọc — bấm Generate hoặc sửa tay.'}
-                          </p>
-                        )}
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          <button
-                            onClick={() => startEdit(beat)}
-                            className="rounded border border-neutral-300 px-3 py-1 text-xs font-medium hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
-                          >
-                            Sửa
-                          </button>
-                          <button
-                            onClick={() => generateBeat(beat.id)}
-                            disabled={isBusy || running}
-                            title="Generate lời đọc từ ảnh bằng AI vision"
-                            className="inline-flex items-center gap-1 rounded border border-violet-500 px-3 py-1 text-xs font-semibold text-violet-600 hover:bg-violet-50 disabled:opacity-50 dark:text-violet-400 dark:hover:bg-violet-950"
-                          >
-                            <SparklesIcon />
-                            {isBusy ? 'Đang generate…' : 'Generate'}
-                          </button>
-                          <button
-                            onClick={() => beatOp('reorder', { beatId: beat.id, to: beat.order - 1 }, beat.id)}
-                            disabled={isBusy || running || i === 0}
-                            className="rounded border border-neutral-300 px-2 py-1 text-xs font-medium hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
-                          >
-                            ▲
-                          </button>
-                          <button
-                            onClick={() => beatOp('reorder', { beatId: beat.id, to: beat.order + 1 }, beat.id)}
-                            disabled={isBusy || running || i === beats.length - 1}
-                            className="rounded border border-neutral-300 px-2 py-1 text-xs font-medium hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
-                          >
-                            ▼
-                          </button>
-                          <button
-                            onClick={() => removeBeat(beat.id)}
-                            disabled={isBusy || running}
-                            className="rounded border border-red-300 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"
-                          >
-                            Xoá
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </li>
-              );
-            })}
-          </ol>
-        </section>
-      </div>
-    </main>
+    </PageShell>
   );
 }

@@ -62,7 +62,8 @@ function isRetryable(err: unknown): boolean {
   return s === undefined;
 }
 
-async function withRetry<T>(fn: () => Promise<T>, tries = 4): Promise<T> {
+// Retry 429/5xx/lỗi mạng với backoff mũ — dùng chung cho vision, script (biên kịch) và TTS.
+export async function withRetry<T>(fn: () => Promise<T>, tries = 4): Promise<T> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < tries; attempt++) {
     try {
@@ -77,7 +78,10 @@ async function withRetry<T>(fn: () => Promise<T>, tries = 4): Promise<T> {
   throw lastErr;
 }
 
-async function createCompletion(
+// Gọi chat.completions với json-mode adaptive + tắt thinking — dùng chung cho vision và
+// script (biên kịch). Cờ jsonModeSupported process-wide: endpoint từ chối json-mode một lần
+// thì thôi luôn (mất tối ưu, không mất đúng đắn).
+export async function createCompletion(
   client: OpenAI,
   model: string,
   messages: ChatCompletionMessageParam[],
@@ -106,7 +110,9 @@ async function createCompletion(
   } as ChatCompletionCreateParamsNonStreaming);
 }
 
-export function parseSceneJSON(raw: string | null | undefined): SceneContent {
+// Rút object JSON từ output model: chịu ```json fences, lời dẫn trước/sau — dùng chung
+// cho parseSceneJSON (vision) và parse kịch bản (script).
+export function extractJson(raw: string | null | undefined): unknown {
   if (!raw || !raw.trim()) throw new Error('Model trả về không đúng JSON (rỗng)');
   let text = raw.trim();
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -114,13 +120,15 @@ export function parseSceneJSON(raw: string | null | undefined): SceneContent {
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
   if (start === -1 || end <= start) throw new Error('Model trả về không đúng JSON');
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(text.slice(start, end + 1));
+    return JSON.parse(text.slice(start, end + 1));
   } catch {
     throw new Error('Model trả về không đúng JSON');
   }
-  const obj = parsed as Record<string, unknown>;
+}
+
+export function parseSceneJSON(raw: string | null | undefined): SceneContent {
+  const obj = extractJson(raw) as Record<string, unknown>;
   const dialogue = Array.isArray(obj.dialogue)
     ? obj.dialogue.map((d) => String(d))
     : obj.dialogue != null && obj.dialogue !== ''

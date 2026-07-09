@@ -5,8 +5,9 @@
 //      VISION_MODEL=mock-vision VISION_RPM=600 SPLIT_HEIGHT=1000 npm run dev
 //   3. npx tsx scripts/e2e-storyboard.mts                       # (E2E_BASE đổi được)
 // Phủ: upload gộp ảnh dài + chia band + cô lập lỗi Stage 1 + storyboard 1 beat/band +
-// sửa tay + Generate (vision) + reorder + export; smart-split né bubble ngay lúc upload;
-// import từ manifest; PDF vào pipeline; split/merge đã gỡ (404).
+// sửa tay + Generate (vision) + reorder + lưu project .mtvproj; smart-split né bubble
+// ngay lúc upload; mở lại project (không re-ingest); PDF vào pipeline; split/merge đã gỡ.
+import AdmZip from 'adm-zip';
 import sharp from 'sharp';
 
 const BASE = process.env.E2E_BASE ?? 'http://localhost:3105';
@@ -260,16 +261,26 @@ console.log('A. Upload 3 khối sọc (thưa/đậm/thưa) → gộp + chia gutt
     'order liền mạch sau reorder',
   );
 
-  // Export
-  const exportRes = await fetch(`${BASE}/api/jobs/${job.jobId}/storyboard/export`);
-  eq(exportRes.status, 200, 'export 200');
+  // Lưu project .mtvproj (thay export storyboard JSON cũ) — route cũ phải đã gỡ
+  const oldExport = await fetch(`${BASE}/api/jobs/${job.jobId}/storyboard/export`);
+  eq(oldExport.status, 404, 'route export storyboard cũ đã gỡ → 404');
+  const exportRes = await fetch(`${BASE}/api/project/export?jobId=${job.jobId}`);
+  eq(exportRes.status, 200, 'export project 200');
   ok(
-    (exportRes.headers.get('content-disposition') ?? '').startsWith('attachment'),
-    'export là attachment',
+    (exportRes.headers.get('content-disposition') ?? '').includes('.mtvproj'),
+    'export là attachment .mtvproj',
   );
-  const manifest = await exportRes.json();
-  eq(manifest.version, 1, 'manifest version 1');
-  eq(manifest.sourceKind, 'pages', 'manifest sourceKind');
+  const zip = new AdmZip(Buffer.from(await exportRes.arrayBuffer()));
+  const projectJson = JSON.parse(zip.getEntry('project.json')!.getData().toString('utf8'));
+  eq(projectJson.version, 1, 'project.json version 1');
+  eq(projectJson.working.length, 3, 'project.json meta 3 ảnh working');
+  ok(
+    [0, 1, 2].every((i) => !!zip.getEntry(`working/${i}.jpg`) && !!zip.getEntry(`items/band-${i}.jpg`)),
+    'ảnh working + band embed đủ trong zip',
+  );
+  const manifest = JSON.parse(zip.getEntry('storyboard.json')!.getData().toString('utf8'));
+  eq(manifest.version, 1, 'storyboard.json version 1');
+  eq(manifest.sourceKind, 'pages', 'storyboard.json sourceKind');
   eq(manifest.beatCount, 3, 'beatCount khớp');
   eq(
     manifest.beats.map((b: any) => b.order),
@@ -284,15 +295,15 @@ console.log('A. Upload 3 khối sọc (thưa/đậm/thưa) → gộp + chia gutt
 }
 
 // ============ B. SMART-SPLIT NÉ BUBBLE NGAY LÚC UPLOAD (webtoon) ============
-console.log('B. 2 khối sọc webtoon → upload cắt trong gutter (né nội dung) → storyboard → Generate từng nhịp → export');
+console.log('B. 2 khối sọc webtoon → upload cắt trong gutter (né nội dung) → storyboard → Generate từng nhịp → lưu project');
 let bandManifest: any;
-let slicePages: Buffer[];
+let projectZip: Buffer;
 let bandCount: number;
 {
   // 2 khối sọc 400×900 + gutter 40 (canvas 400×1880). Thuật toán cắt trong gutter trắng
   // [900,940) giữa hai khối → KHÔNG cắt xuyên khối sọc (nội dung). inkRatio 0.3 (mean ~178)
   // → mock trả scene (không phải marker lỗi).
-  slicePages = [await stripePage(400, 900, 0.3), await stripePage(400, 900, 0.3)];
+  const slicePages = [await stripePage(400, 900, 0.3), await stripePage(400, 900, 0.3)];
   const fd = new FormData();
   fd.append('images', toBlob(slicePages[0], 'image/jpeg'), 'a1.jpg');
   fd.append('images', toBlob(slicePages[1], 'image/jpeg'), 'a2.jpg');
@@ -321,53 +332,64 @@ let bandCount: number;
     eq(gen.narration, MOCK_NARRATION, `Generate nhịp ${b.order} → narration mock`);
   }
 
-  const exportRes = await fetch(`${BASE}/api/jobs/${job.jobId}/storyboard/export`);
-  bandManifest = await exportRes.json();
-  eq(bandManifest.beatCount, bandCount, 'export số beats khớp band');
-  ok(bandManifest.beats.every((b: any) => b.narration === MOCK_NARRATION), 'export sau Generate');
+  const exportRes = await fetch(`${BASE}/api/project/export?jobId=${job.jobId}`);
+  eq(exportRes.status, 200, 'lưu project 200');
+  projectZip = Buffer.from(await exportRes.arrayBuffer());
+  bandManifest = JSON.parse(
+    new AdmZip(projectZip).getEntry('storyboard.json')!.getData().toString('utf8'),
+  );
+  eq(bandManifest.beatCount, bandCount, 'project chứa số beats khớp band');
+  ok(bandManifest.beats.every((b: any) => b.narration === MOCK_NARRATION), 'project lưu sau Generate');
 }
 
-// ============ B2. IMPORT (nạp lại từ manifest + ảnh gốc) ============
-console.log('B2. Import: manifest + 2 slice gốc → chia band tái lập → storyboard khớp');
+// ============ B2. MỞ PROJECT (.mtvproj — không cần ảnh rời, không re-ingest) ============
+console.log('B2. Mở project: 1 file .mtvproj → hydrate job + storyboard khớp, không re-ingest');
 {
   const fd = new FormData();
-  fd.append(
-    'manifest',
-    toBlob(Buffer.from(JSON.stringify(bandManifest)), 'application/json'),
-    'storyboard.json',
-  );
-  fd.append('images', toBlob(slicePages[0], 'image/jpeg'), 'a1.jpg');
-  fd.append('images', toBlob(slicePages[1], 'image/jpeg'), 'a2.jpg');
-  const dto = await api<any>('/api/storyboard/import', { method: 'POST', body: fd });
-  ok(dto.jobId !== bandManifest.jobId, 'import tạo job mới');
+  fd.append('file', toBlob(projectZip, 'application/zip'), 'project.mtvproj');
+  const imp = await api<any>('/api/project/import', { method: 'POST', body: fd });
+  ok(imp.jobId !== bandManifest.jobId, 'mở project tạo job mới');
+  eq(imp.stage, 'storyboard', 'chưa có kịch bản → điều hướng storyboard');
+
+  const dto = await api<any>(`/api/jobs/${imp.jobId}/storyboard`);
   eq(dto.progress.phase, 'done', 'không compose lại — phase done');
-  eq(dto.working.length, bandCount, 'working = số band tái lập từ ảnh gốc');
+  eq(dto.working.length, bandCount, 'working hydrate từ ảnh embed (không re-ingest)');
   eq(
     dto.beats.map((b: any) => [b.sourceIndex, b.narration]),
     bandManifest.beats.map((b: any) => [b.sourceIndex, b.narration]),
-    'beats khớp manifest (sourceIndex + narration)',
+    'beats khớp bản lưu (sourceIndex + narration)',
   );
-  const reExport = await (await fetch(`${BASE}/api/jobs/${dto.jobId}/storyboard/export`)).json();
+  const jobDto = await api<any>(`/api/jobs/${imp.jobId}`);
+  eq(jobDto.items.length, bandCount, 'job Stage 1 hydrate đủ band');
+
+  const reExportRes = await fetch(`${BASE}/api/project/export?jobId=${imp.jobId}`);
+  const reManifest = JSON.parse(
+    new AdmZip(Buffer.from(await reExportRes.arrayBuffer()))
+      .getEntry('storyboard.json')!
+      .getData()
+      .toString('utf8'),
+  );
   eq(
-    reExport.beats.map((b: any) => [b.order, b.narration]),
+    reManifest.beats.map((b: any) => [b.order, b.narration]),
     bandManifest.beats.map((b: any) => [b.order, b.narration]),
-    're-export khớp manifest gốc',
+    're-export khớp bản lưu gốc',
   );
 
-  // Import thiếu ảnh (beat trỏ band không tồn tại) → 400 rõ ràng, không dựng nửa vời
-  const fdBad = new FormData();
+  // Route import cũ (manifest + ảnh rời) phải đã gỡ
+  const oldImport = await fetch(`${BASE}/api/storyboard/import`, { method: 'POST', body: new FormData() });
+  eq(oldImport.status, 404, 'route import cũ đã gỡ → 404');
+
+  // Project hỏng (beat trỏ working không tồn tại) → 400 rõ ràng, không dựng nửa vời
+  const badZip = new AdmZip(projectZip);
   const badManifest = {
     ...bandManifest,
     beats: bandManifest.beats.map((b: any, i: number) => (i === 0 ? { ...b, sourceIndex: 99 } : b)),
   };
-  fdBad.append(
-    'manifest',
-    toBlob(Buffer.from(JSON.stringify(badManifest)), 'application/json'),
-    'storyboard.json',
-  );
-  fdBad.append('images', toBlob(slicePages[0], 'image/jpeg'), 'a1.jpg');
-  const badRes = await fetch(`${BASE}/api/storyboard/import`, { method: 'POST', body: fdBad });
-  eq(badRes.status, 400, 'import không khớp (sourceIndex vượt số band) → 400');
+  badZip.updateFile('storyboard.json', Buffer.from(JSON.stringify(badManifest)));
+  const fdBad = new FormData();
+  fdBad.append('file', toBlob(badZip.toBuffer(), 'application/zip'), 'bad.mtvproj');
+  const badRes = await fetch(`${BASE}/api/project/import`, { method: 'POST', body: fdBad });
+  eq(badRes.status, 400, 'project không khớp (sourceIndex thiếu ảnh) → 400');
 }
 
 // ============ C. PDF ============

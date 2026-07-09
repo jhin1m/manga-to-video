@@ -118,7 +118,11 @@ export function toItemDTO(jobId: string, item: StoredItem): ItemDTO {
   return {
     index: item.index,
     filename: item.filename,
-    imageUrl: `/api/jobs/${jobId}/items/${item.index}/image`,
+    // ?v=filename định danh band vào URL: sau khi deleteItem re-index, đường dẫn theo vị trí
+    // /items/{index}/image bị TÁI DÙNG cho band khác — trình duyệt giữ ảnh đã decode của URL cũ
+    // và hiện lại (dù server trả bytes mới, dù Cache-Control: no-store), gây ảnh trùng/kẹt. Gắn
+    // filename (duy nhất & ổn định mỗi band) khiến mỗi band có URL riêng, không bao giờ đụng ảnh cũ.
+    imageUrl: `/api/jobs/${jobId}/items/${item.index}/image?v=${encodeURIComponent(item.filename)}`,
     content: item.content,
     ...(item.error !== undefined ? { error: item.error } : {}),
   };

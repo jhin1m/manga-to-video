@@ -2,6 +2,26 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
+import { Loader2, RotateCcw, Sparkles, Upload, X } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Progress } from '@/components/ui/progress';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { Textarea } from '@/components/ui/textarea';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { PageShell } from '@/components/page-shell';
+import { useProject } from '@/components/project-context';
+import { cn } from '@/lib/utils';
 import type { ItemDTO, JobProgress, JobStatusDTO, StoryboardDTO } from '@/lib/schema';
 
 interface Draft {
@@ -39,9 +59,9 @@ function phaseLabel(p: JobProgress): string {
 
 export default function Home() {
   const router = useRouter();
+  const { publish, reset } = useProject();
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [progress, setProgress] = useState<JobProgress | null>(null);
   const [items, setItems] = useState<ItemDTO[]>([]);
@@ -49,9 +69,6 @@ export default function Home() {
   const [rowBusy, setRowBusy] = useState<Set<number>>(new Set());
   const [rpm, setRpm] = useState(30); // nhịp vision (req/phút) — chỉnh trước khi Chạy để tránh 429
   const [sbBusy, setSbBusy] = useState(false);
-  const [importManifest, setImportManifest] = useState<File | null>(null);
-  const [importImages, setImportImages] = useState<File[]>([]);
-  const [importBusy, setImportBusy] = useState(false);
   const esRef = useRef<EventSource | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -83,7 +100,7 @@ export default function Home() {
         }
       } catch {
         stopPolling();
-        setError('Mất kết nối với job (server có thể đã khởi động lại). Hãy chạy lại chapter.');
+        toast.error('Mất kết nối với job (server có thể đã khởi động lại). Hãy chạy lại chapter.');
       }
     }, 2000);
   }
@@ -121,7 +138,7 @@ export default function Home() {
       setItems(dto.items);
       setProgress(dto.progress);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không tải được kết quả');
+      toast.error(err instanceof Error ? err.message : 'Không tải được kết quả');
     }
   }
 
@@ -156,10 +173,9 @@ export default function Home() {
 
   // Bước 1: upload + downscale → job ở phase 'ready'. CHƯA gọi vision; hiện lưới xem trước.
   async function handleUpload(toUpload: File[]) {
-    setError(null);
     const zips = toUpload.filter((f) => /\.zip$/i.test(f.name));
     if (zips.length > 1) {
-      setError('Chỉ hỗ trợ 1 file zip mỗi lần chạy');
+      toast.error('Chỉ hỗ trợ 1 file zip mỗi lần chạy');
       return;
     }
     const fd = new FormData();
@@ -175,8 +191,9 @@ export default function Home() {
       setJobId(dto.jobId);
       setItems(dto.items); // thumbnail xem trước, đúng thứ tự đọc
       setProgress(dto.progress); // phase 'ready'
+      publish({ jobId: dto.jobId, dirty: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không tạo được job');
+      toast.error(err instanceof Error ? err.message : 'Không tạo được job');
     } finally {
       setBusy(false);
     }
@@ -185,7 +202,6 @@ export default function Home() {
   // Bước 2: kích hoạt vision cho toàn bộ trang (rate limit theo rpm) rồi theo dõi qua SSE.
   async function handleRun() {
     if (!jobId) return;
-    setError(null);
     setBusy(true);
     try {
       const dto = await fetchJSON<JobStatusDTO>(`/api/jobs/${jobId}/run`, {
@@ -196,7 +212,7 @@ export default function Home() {
       setProgress(dto.progress);
       attachStream(jobId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không chạy được job');
+      toast.error(err instanceof Error ? err.message : 'Không chạy được job');
     } finally {
       setBusy(false);
     }
@@ -242,7 +258,7 @@ export default function Home() {
       replaceItem(updated);
       cancelEdit(index);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không lưu được nội dung');
+      toast.error(err instanceof Error ? err.message : 'Không lưu được nội dung');
     } finally {
       setRowBusyFlag(index, false);
     }
@@ -252,7 +268,6 @@ export default function Home() {
   // (route tự chặn 409 nếu job đang chạy), dùng chung cờ busy với nút Chạy/Chọn file.
   async function removeItem(index: number) {
     if (!jobId) return;
-    setError(null);
     setBusy(true);
     try {
       const dto = await fetchJSON<JobStatusDTO>(`/api/jobs/${jobId}/items/${index}`, {
@@ -261,7 +276,7 @@ export default function Home() {
       setItems(dto.items);
       setProgress(dto.progress);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không xoá được ảnh');
+      toast.error(err instanceof Error ? err.message : 'Không xoá được ảnh');
     } finally {
       setBusy(false);
     }
@@ -276,7 +291,7 @@ export default function Home() {
       });
       replaceItem(updated);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Thử lại thất bại');
+      toast.error(err instanceof Error ? err.message : 'Thử lại thất bại');
     } finally {
       setRowBusyFlag(index, false);
     }
@@ -285,40 +300,14 @@ export default function Home() {
   // Tạo storyboard (Stage 1.5) từ job hiện tại rồi chuyển sang trang biên tập nhịp.
   async function createStoryboard() {
     if (!jobId) return;
-    setError(null);
     setSbBusy(true);
     try {
       await fetchJSON<StoryboardDTO>(`/api/jobs/${jobId}/storyboard`, { method: 'POST' });
+      publish({ hasStoryboard: true, dirty: true });
       router.push(`/storyboard/${jobId}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không tạo được storyboard');
+      toast.error(err instanceof Error ? err.message : 'Không tạo được storyboard');
       setSbBusy(false);
-    }
-  }
-
-  // Nạp lại storyboard từ manifest JSON + ảnh nguồn (đường phục hồi sau restart).
-  async function importStoryboard() {
-    if (!importManifest || importImages.length === 0) {
-      setError('Cần chọn manifest JSON và ảnh nguồn (hoặc PDF/zip) để nạp lại');
-      return;
-    }
-    setError(null);
-    setImportBusy(true);
-    try {
-      const fd = new FormData();
-      fd.append('manifest', importManifest);
-      for (const f of importImages) {
-        if (/\.zip$/i.test(f.name)) fd.append('zip', f);
-        else fd.append('images', f);
-      }
-      const dto = await fetchJSON<StoryboardDTO>('/api/storyboard/import', {
-        method: 'POST',
-        body: fd,
-      });
-      router.push(`/storyboard/${dto.jobId}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Không nạp lại được storyboard');
-      setImportBusy(false);
     }
   }
 
@@ -330,7 +319,7 @@ export default function Home() {
     setProgress(null);
     setItems([]);
     setDrafts({});
-    setError(null);
+    reset();
   }
 
   const running =
@@ -340,26 +329,14 @@ export default function Home() {
   const pct = progress && progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
 
   return (
-    <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-8">
-      <h1 className="text-2xl font-bold">Manga Content Extractor</h1>
-      <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
-        Tải ảnh chapter (hoặc zip/PDF) → gộp thành một dải dọc rồi tự chia lại theo khoảng an toàn →
-        trích xuất mô tả + thoại từng ảnh bằng vision LLM → sửa tay → xuất JSON.
-      </p>
-
-      {error && (
-        <div className="mt-4 flex items-start justify-between gap-3 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
-          <span>{error}</span>
-          <button onClick={() => setError(null)} className="shrink-0 font-medium underline">
-            Đóng
-          </button>
-        </div>
-      )}
-
+    <PageShell
+      title="Trích xuất nội dung"
+      subtitle="Tải ảnh chapter (hoặc zip/PDF) → gộp thành dải dọc rồi chia lại theo khoảng an toàn → trích xuất mô tả + thoại từng ảnh bằng vision LLM → sửa tay."
+    >
       {/* Khu upload */}
       {!jobId && (
-        <section className="mt-6">
-          <div
+        <section>
+          <Card
             onDragOver={(e) => {
               e.preventDefault();
               setDragging(true);
@@ -370,126 +347,95 @@ export default function Home() {
               setDragging(false);
               handleSelection(e.dataTransfer.files);
             }}
-            className={`rounded-xl border-2 border-dashed p-8 text-center transition-colors ${
-              dragging
-                ? 'border-blue-500 bg-blue-50 dark:bg-blue-950'
-                : 'border-neutral-300 dark:border-neutral-700'
-            }`}
+            className={cn(
+              'border-2 border-dashed shadow-none transition-colors',
+              dragging && 'border-primary bg-muted',
+            )}
           >
-            <p className="text-sm text-neutral-600 dark:text-neutral-300">
-              {busy
-                ? 'Đang tải lên & xử lý ảnh…'
-                : 'Kéo thả ảnh (đánh số 1.jpg, 2.jpg, …), file .zip hoặc .pdf vào đây'}
-            </p>
-            <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
-              <label className="cursor-pointer rounded-lg bg-neutral-800 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-700 dark:bg-neutral-200 dark:text-neutral-900 dark:hover:bg-neutral-300">
-                Chọn file
-                <input
-                  type="file"
-                  multiple
-                  accept="image/*,.zip,.pdf"
-                  className="hidden"
-                  onChange={(e) => {
-                    if (e.target.files) handleSelection(e.target.files);
-                    e.target.value = '';
-                  }}
-                />
-              </label>
-              <label className="cursor-pointer rounded-lg border border-neutral-300 px-4 py-2 text-sm font-medium hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800">
-                Chọn thư mục
-                <input
-                  type="file"
-                  className="hidden"
-                  // @ts-expect-error -- webkitdirectory: thuộc tính không chuẩn nhưng các trình duyệt đều hỗ trợ
-                  webkitdirectory=""
-                  onChange={(e) => {
-                    if (e.target.files) handleSelection(e.target.files);
-                    e.target.value = '';
-                  }}
-                />
-              </label>
-            </div>
-          </div>
+            <CardContent className="py-10 text-center">
+              <Upload className="mx-auto size-6 text-muted-foreground" aria-hidden />
+              <p className="mt-3 text-sm text-muted-foreground">
+                {busy
+                  ? 'Đang tải lên & xử lý ảnh…'
+                  : 'Kéo thả ảnh (đánh số 1.jpg, 2.jpg, …), file .zip hoặc .pdf vào đây'}
+              </p>
+              <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+                <Button asChild>
+                  <label className={cn('cursor-pointer', busy && 'pointer-events-none opacity-50')}>
+                    Chọn file
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/*,.zip,.pdf"
+                      className="hidden"
+                      onChange={(e) => {
+                        if (e.target.files) handleSelection(e.target.files);
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                </Button>
+                <Button asChild variant="outline">
+                  <label className={cn('cursor-pointer', busy && 'pointer-events-none opacity-50')}>
+                    Chọn thư mục
+                    <input
+                      type="file"
+                      className="hidden"
+                      // @ts-expect-error -- webkitdirectory: thuộc tính không chuẩn nhưng các trình duyệt đều hỗ trợ
+                      webkitdirectory=""
+                      onChange={(e) => {
+                        if (e.target.files) handleSelection(e.target.files);
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
 
-          {/* Nạp lại storyboard đã export (store in-memory mất khi restart) */}
-          <details className="mt-4 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-            <summary className="cursor-pointer text-sm font-medium">
-              Nạp lại storyboard từ manifest + ảnh
-            </summary>
-            <div className="mt-3 space-y-3 text-sm">
-              <label className="block text-xs font-medium text-neutral-500">
-                Manifest storyboard (.json)
-                <input
-                  type="file"
-                  accept=".json,application/json"
-                  className="mt-1 block w-full text-sm"
-                  onChange={(e) => setImportManifest(e.target.files?.[0] ?? null)}
-                />
-              </label>
-              <label className="block text-xs font-medium text-neutral-500">
-                Ảnh nguồn (đúng bộ ảnh phiên export — ảnh rời, .zip hoặc .pdf)
-                <input
-                  type="file"
-                  multiple
-                  accept="image/*,.zip,.pdf"
-                  className="mt-1 block w-full text-sm"
-                  onChange={(e) => setImportImages(e.target.files ? Array.from(e.target.files) : [])}
-                />
-              </label>
-              <button
-                onClick={importStoryboard}
-                disabled={importBusy || !importManifest || importImages.length === 0}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-50"
-              >
-                {importBusy ? 'Đang nạp…' : 'Nạp lại storyboard'}
-              </button>
-            </div>
-          </details>
+          <p className="mt-4 text-xs text-muted-foreground">
+            Đã có phiên làm việc cũ? Dùng nút &quot;Mở project&quot; (.mtvproj) trên thanh công cụ.
+          </p>
         </section>
       )}
 
       {/* Xem trước — chưa gọi vision, chờ bấm Chạy */}
       {jobId && isReady && (
-        <section className="mt-6">
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-            <span className="text-sm font-medium">
-              {items.length} ảnh — đã gộp thành dải dọc và chia lại theo khoảng an toàn
-            </span>
-            <div className="flex flex-wrap items-center gap-3">
-              <label className="flex items-center gap-2 text-sm text-neutral-600 dark:text-neutral-300">
-                Nhịp
-                <input
-                  type="number"
-                  min={1}
-                  max={600}
-                  value={rpm}
-                  onChange={(e) => setRpm(Math.min(600, Math.max(1, Math.round(Number(e.target.value) || 1))))}
-                  className="w-20 rounded border border-neutral-300 bg-transparent px-2 py-1 text-sm dark:border-neutral-700"
-                />
-                req/phút
-              </label>
-              <button
-                onClick={handleRun}
-                disabled={busy || items.length === 0}
-                className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-50"
-              >
-                {busy ? 'Đang bắt đầu…' : `Chạy tất cả (${items.length} ảnh)`}
-              </button>
-              <button
-                onClick={createStoryboard}
-                disabled={sbBusy || items.length === 0}
-                className="rounded-lg border border-blue-600 px-4 py-2 text-sm font-semibold text-blue-600 hover:bg-blue-50 disabled:opacity-50 dark:hover:bg-blue-950"
-              >
-                {sbBusy ? 'Đang tạo…' : 'Tạo storyboard'}
-              </button>
-              <button
-                onClick={resetAll}
-                className="rounded-lg border border-neutral-300 px-4 py-2 text-sm font-medium hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
-              >
-                Chapter mới
-              </button>
-            </div>
-          </div>
+        <section>
+          <Card className="py-4">
+            <CardContent className="flex flex-wrap items-center justify-between gap-3 px-4">
+              <span className="text-sm font-medium">
+                {items.length} ảnh — đã gộp thành dải dọc và chia lại theo khoảng an toàn
+              </span>
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                  Nhịp
+                  <Input
+                    type="number"
+                    min={1}
+                    max={600}
+                    value={rpm}
+                    onChange={(e) =>
+                      setRpm(Math.min(600, Math.max(1, Math.round(Number(e.target.value) || 1))))
+                    }
+                    className="w-20"
+                  />
+                  req/phút
+                </label>
+                <Button onClick={handleRun} disabled={busy || items.length === 0}>
+                  {busy ? 'Đang bắt đầu…' : `Chạy tất cả (${items.length} ảnh)`}
+                </Button>
+                <Button variant="ai" onClick={createStoryboard} disabled={sbBusy || items.length === 0}>
+                  <Sparkles data-icon="inline-start" />
+                  {sbBusy ? 'Đang tạo…' : 'Tạo storyboard'}
+                </Button>
+                <Button variant="outline" onClick={resetAll}>
+                  Chapter mới
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
 
           <div className="mt-4 grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-6">
             {[...items]
@@ -503,18 +449,25 @@ export default function Home() {
                   <img
                     src={item.imageUrl}
                     alt={item.filename}
-                    className="aspect-[3/4] w-full rounded border border-neutral-200 object-contain dark:border-neutral-800"
+                    className="aspect-[3/4] w-full rounded-lg border object-contain"
                   />
-                  <button
-                    type="button"
-                    onClick={() => removeItem(item.index)}
-                    disabled={busy}
-                    title="Xoá ảnh này"
-                    className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-xs font-bold leading-none text-white hover:bg-red-600 disabled:opacity-50"
-                  >
-                    ✕
-                  </button>
-                  <figcaption className="mt-1 truncate text-center text-xs text-neutral-500">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="icon-xs"
+                        onClick={() => removeItem(item.index)}
+                        disabled={busy}
+                        aria-label="Xoá ảnh này"
+                        className="absolute right-1 top-1 rounded-full bg-black/60 text-white hover:bg-destructive hover:text-white"
+                      >
+                        <X />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Xoá ảnh này</TooltipContent>
+                  </Tooltip>
+                  <figcaption className="mt-1 truncate text-center text-xs text-muted-foreground">
                     {item.index + 1}. {item.filename}
                   </figcaption>
                 </figure>
@@ -525,98 +478,89 @@ export default function Home() {
 
       {/* Tiến độ */}
       {jobId && progress && !isReady && (
-        <section className="mt-6 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-sm font-medium">{phaseLabel(progress)}</span>
-            <div className="flex items-center gap-3">
-              {!running && (
-                <>
-                  <button
-                    onClick={createStoryboard}
-                    disabled={sbBusy}
-                    className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-50"
-                  >
-                    {sbBusy ? 'Đang tạo…' : 'Tạo storyboard'}
-                  </button>
-                  <a
-                    href={`/api/jobs/${jobId}/export`}
-                    download
-                    className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500"
-                  >
-                    Export JSON
-                  </a>
-                  <button
-                    onClick={resetAll}
-                    className="rounded-lg border border-neutral-300 px-4 py-2 text-sm font-medium hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
-                  >
-                    Chapter mới
-                  </button>
-                </>
-              )}
+        <Card className="py-4">
+          <CardContent className="px-4">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-sm font-medium">{phaseLabel(progress)}</span>
+              <div className="flex items-center gap-2">
+                {!running && (
+                  <>
+                    <Button variant="ai" onClick={createStoryboard} disabled={sbBusy}>
+                      <Sparkles data-icon="inline-start" />
+                      {sbBusy ? 'Đang tạo…' : 'Tạo storyboard'}
+                    </Button>
+                    <Button variant="success" asChild>
+                      <a href={`/api/jobs/${jobId}/export`} download>
+                        Export JSON
+                      </a>
+                    </Button>
+                    <Button variant="outline" onClick={resetAll}>
+                      Chapter mới
+                    </Button>
+                  </>
+                )}
+              </div>
             </div>
-          </div>
-          <div className="mt-3 h-2 overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
-            <div
-              className={`h-full rounded-full transition-all ${
-                progress.phase === 'failed' ? 'bg-red-500' : 'bg-blue-600'
-              }`}
-              style={{ width: `${pct}%` }}
+            <Progress
+              value={pct}
+              className={cn('mt-3', progress.phase === 'failed' && '[&>[data-slot=progress-indicator]]:bg-destructive')}
             />
-          </div>
-        </section>
+          </CardContent>
+        </Card>
       )}
 
       {/* Bảng kết quả */}
       {showResults && items.length > 0 && (
-        <section className="mt-6 overflow-x-auto">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-b border-neutral-300 text-left dark:border-neutral-700">
-                <th className="w-28 py-2 pr-4 font-semibold sm:w-36">Trang</th>
-                <th className="py-2 font-semibold">Nội dung</th>
-              </tr>
-            </thead>
-            <tbody>
+        <section className="mt-6">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-28 sm:w-36">Trang</TableHead>
+                <TableHead>Nội dung</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {[...items]
                 .sort((a, b) => a.index - b.index)
                 .map((item) => {
                   const draft = drafts[item.index];
                   const isBusy = rowBusy.has(item.index);
                   return (
-                    <tr
-                      key={item.index}
-                      className="border-b border-neutral-200 align-top dark:border-neutral-800"
-                    >
-                      <td className="py-3 pr-4">
+                    <TableRow key={item.index} className="align-top hover:bg-transparent">
+                      <TableCell className="py-3 pr-4">
                         {/* eslint-disable-next-line @next/next/no-img-element -- ảnh từ store in-memory, không dùng next/image */}
                         <img
                           src={item.imageUrl}
                           alt={item.filename}
-                          className="w-24 rounded border border-neutral-200 object-contain dark:border-neutral-800 sm:w-32"
+                          className="w-24 rounded-lg border object-contain sm:w-32"
                         />
-                        <p className="mt-1 break-all text-xs text-neutral-500">{item.filename}</p>
-                      </td>
-                      <td className="py-3">
+                        <p className="mt-1 break-all text-xs text-muted-foreground">{item.filename}</p>
+                      </TableCell>
+                      <TableCell className="whitespace-normal py-3">
                         {item.error && (
                           <div className="mb-2 flex flex-wrap items-center gap-2">
-                            <span className="rounded bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700 dark:bg-red-950 dark:text-red-300">
-                              Lỗi: {item.error}
-                            </span>
-                            <button
+                            <Badge variant="destructive">Lỗi: {item.error}</Badge>
+                            <Button
+                              variant="destructive"
+                              size="xs"
                               onClick={() => retryItem(item.index)}
                               disabled={isBusy}
-                              className="rounded border border-red-300 px-2 py-0.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950"
                             >
+                              {isBusy ? (
+                                <Loader2 className="animate-spin" data-icon="inline-start" />
+                              ) : (
+                                <RotateCcw data-icon="inline-start" />
+                              )}
                               {isBusy ? 'Đang thử…' : 'Thử lại'}
-                            </button>
+                            </Button>
                           </div>
                         )}
 
                         {draft ? (
                           <div className="space-y-2">
-                            <label className="block text-xs font-medium text-neutral-500">
+                            <label className="block text-xs font-medium text-muted-foreground">
                               Mô tả
-                              <textarea
+                              <Textarea
                                 value={draft.description}
                                 onChange={(e) =>
                                   setDrafts((prev) => ({
@@ -625,12 +569,12 @@ export default function Home() {
                                   }))
                                 }
                                 rows={3}
-                                className="mt-1 w-full rounded border border-neutral-300 bg-transparent p-2 text-sm dark:border-neutral-700"
+                                className="mt-1"
                               />
                             </label>
-                            <label className="block text-xs font-medium text-neutral-500">
+                            <label className="block text-xs font-medium text-muted-foreground">
                               Thoại (mỗi dòng một câu)
-                              <textarea
+                              <Textarea
                                 value={draft.dialogue}
                                 onChange={(e) =>
                                   setDrafts((prev) => ({
@@ -639,12 +583,12 @@ export default function Home() {
                                   }))
                                 }
                                 rows={4}
-                                className="mt-1 w-full rounded border border-neutral-300 bg-transparent p-2 text-sm dark:border-neutral-700"
+                                className="mt-1"
                               />
                             </label>
-                            <label className="block text-xs font-medium text-neutral-500">
+                            <label className="block text-xs font-medium text-muted-foreground">
                               Ghi chú
-                              <textarea
+                              <Textarea
                                 value={draft.note}
                                 onChange={(e) =>
                                   setDrafts((prev) => ({
@@ -653,24 +597,21 @@ export default function Home() {
                                   }))
                                 }
                                 rows={2}
-                                className="mt-1 w-full rounded border border-neutral-300 bg-transparent p-2 text-sm dark:border-neutral-700"
+                                className="mt-1"
                               />
                             </label>
                             <div className="flex gap-2">
-                              <button
-                                onClick={() => saveEdit(item.index)}
-                                disabled={isBusy}
-                                className="rounded bg-blue-600 px-3 py-1 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-50"
-                              >
+                              <Button size="sm" onClick={() => saveEdit(item.index)} disabled={isBusy}>
                                 {isBusy ? 'Đang lưu…' : 'Lưu'}
-                              </button>
-                              <button
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
                                 onClick={() => cancelEdit(item.index)}
                                 disabled={isBusy}
-                                className="rounded border border-neutral-300 px-3 py-1 text-xs font-medium hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
                               >
                                 Hủy
-                              </button>
+                              </Button>
                             </div>
                           </div>
                         ) : (
@@ -679,39 +620,38 @@ export default function Home() {
                               <>
                                 <p className="whitespace-pre-wrap">{item.content.description}</p>
                                 {item.content.dialogue.length > 0 && (
-                                  <ul className="list-inside list-disc space-y-0.5 text-neutral-700 dark:text-neutral-300">
+                                  <ul className="list-inside list-disc space-y-0.5 text-muted-foreground">
                                     {item.content.dialogue.map((line, k) => (
                                       <li key={k}>{line}</li>
                                     ))}
                                   </ul>
                                 )}
                                 {item.content.note && (
-                                  <p className="text-xs italic text-neutral-500">
+                                  <p className="text-xs italic text-muted-foreground">
                                     Ghi chú: {item.content.note}
                                   </p>
                                 )}
                               </>
                             ) : (
                               !item.error && (
-                                <p className="text-xs italic text-neutral-400">Chưa có nội dung</p>
+                                <p className="text-xs italic text-muted-foreground/70">
+                                  Chưa có nội dung
+                                </p>
                               )
                             )}
-                            <button
-                              onClick={() => startEdit(item)}
-                              className="rounded border border-neutral-300 px-3 py-1 text-xs font-medium hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
-                            >
+                            <Button size="sm" variant="outline" onClick={() => startEdit(item)}>
                               Sửa
-                            </button>
+                            </Button>
                           </div>
                         )}
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                   );
                 })}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </section>
       )}
-    </main>
+    </PageShell>
   );
 }

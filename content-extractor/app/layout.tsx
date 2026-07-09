@@ -1,5 +1,10 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { ThemeProvider } from "next-themes";
+import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { AppShell } from "@/components/app-shell";
+import { ProjectProvider } from "@/components/project-context";
 
 export const metadata: Metadata = {
   title: "Manga Content Extractor",
@@ -13,8 +18,19 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="vi" className="h-full antialiased">
-      <body className="min-h-full flex flex-col">{children}</body>
+    // suppressHydrationWarning: next-themes gắn class .dark lên <html> trước hydrate
+    // (script chống flash) nên attribute server/client lệch nhau có chủ đích.
+    <html lang="vi" className="h-full antialiased" suppressHydrationWarning>
+      <body className="min-h-full flex flex-col">
+        <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+          <ProjectProvider>
+            <TooltipProvider>
+              <AppShell>{children}</AppShell>
+            </TooltipProvider>
+          </ProjectProvider>
+          <Toaster richColors position="top-center" />
+        </ThemeProvider>
+      </body>
     </html>
   );
 }

@@ -7,19 +7,35 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:unit": "tsx scripts/verify-ingest.mts && tsx scripts/verify-banding.mts && tsx scripts/verify-narration.mts",
+    "test:unit": "tsx scripts/verify-ingest.mts && tsx scripts/verify-banding.mts && tsx scripts/verify-narration.mts && tsx scripts/verify-script.mts && tsx scripts/verify-project.mts",
+    "test:script": "tsx scripts/verify-script.mts",
+    "test:project": "tsx scripts/verify-project.mts",
+    "test:render": "tsx scripts/verify-render.mts",
+    "render": "tsx scripts/render-video.mts",
     "mock:vision": "node scripts/mock-openai-vision.mjs",
-    "test:e2e": "tsx scripts/e2e-storyboard.mts"
+    "mock:elevenlabs": "node scripts/mock-elevenlabs.mjs",
+    "mock:script": "node scripts/mock-script-model.mjs",
+    "test:e2e": "tsx scripts/e2e-storyboard.mts",
+    "test:e2e-video": "tsx scripts/e2e-script-video.mts"
   },
   "dependencies": {
     "adm-zip": "^0.5.18",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.23.0",
     "next": "16.2.10",
+    "next-themes": "^0.4.6",
     "openai": "^6.45.0",
     "p-limit": "^7.3.0",
     "pdf-to-img": "^6.2.0",
+    "radix-ui": "^1.6.2",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "sharp": "^0.35.3"
+    "shadcn": "^4.13.0",
+    "sharp": "^0.35.3",
+    "sonner": "^2.0.7",
+    "tailwind-merge": "^3.6.0",
+    "tw-animate-css": "^1.4.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

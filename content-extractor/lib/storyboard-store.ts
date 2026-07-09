@@ -5,6 +5,8 @@ import type {
   ItemStatus,
   JobProgress,
   SceneContent,
+  ScriptDTO,
+  ScriptSegment,
   SourceKind,
   StoryboardDTO,
 } from './schema';
@@ -35,6 +37,15 @@ export interface StoredBeat extends Beat {
   rev: number;
 }
 
+// Audio TTS đã synth cho một segment (Stage 2): path file trong cache đĩa + độ dài đo được.
+// text = narration tại thời điểm synth — export-bundle so với narration hiện tại để loại
+// audio cũ (người dùng sửa narration sau khi synth).
+export interface SegmentAudio {
+  mp3Path: string;
+  durationSec: number;
+  text: string;
+}
+
 export interface StoryboardState {
   jobId: string;
   createdAt: string;
@@ -42,6 +53,11 @@ export interface StoryboardState {
   working: WorkingImage[];
   beats: StoredBeat[];
   progress: JobProgress; // tiến độ compose (2A) — tái dùng shape Stage 1
+  // ==== Stage 2: kịch bản AI ====
+  script?: ScriptSegment[];
+  scriptConfirmed?: boolean; // người duyệt chốt — mở đường "Dựng video"
+  scriptGenerating?: boolean; // đang gọi model biên kịch — route trả 409 khi trùng
+  ttsAudio?: Map<string, SegmentAudio>; // segId → audio đã synth (preview "có audio")
 }
 
 // Singleton trên globalThis — sống sót qua HMR của dev server (mẫu lib/jobs.ts).
@@ -238,6 +254,168 @@ export function toBeatDTO(jobId: string, sb: StoredBeat): BeatDTO {
   return {
     ...toBeat(sb),
     cropUrl: `/api/jobs/${jobId}/storyboard/beats/${sb.id}/crop`,
+  };
+}
+
+// ==== Stage 2: mutators kịch bản (script) ====
+// Mọi mutator dưới đây thao tác trên state.script (in-memory, mẫu beats). Sửa bất kỳ
+// segment nào → scriptConfirmed reset (bản duyệt cũ hết hiệu lực).
+
+function requireScript(jobId: string): { state: StoryboardState; script: ScriptSegment[] } {
+  const state = store.get(jobId);
+  if (!state || !state.script) throw new Error('Chưa có kịch bản cho job này');
+  return { state, script: state.script };
+}
+
+function resequence(script: ScriptSegment[]): void {
+  script.forEach((seg, i) => {
+    seg.order = i;
+  });
+}
+
+// Thay toàn bộ kịch bản (sau khi generate) — reset cờ duyệt + audio đã synth cho bản cũ.
+export function setScript(jobId: string, segments: ScriptSegment[]): void {
+  const state = store.get(jobId);
+  if (!state) return;
+  state.script = [...segments].sort((a, b) => a.order - b.order);
+  resequence(state.script);
+  state.scriptConfirmed = false;
+  state.ttsAudio = undefined;
+}
+
+export function getScript(jobId: string): ScriptSegment[] | undefined {
+  return store.get(jobId)?.script;
+}
+
+export function getSegment(jobId: string, segId: string): ScriptSegment | undefined {
+  return store.get(jobId)?.script?.find((s) => s.id === segId);
+}
+
+export function setScriptGenerating(jobId: string, on: boolean): void {
+  const state = store.get(jobId);
+  if (state) state.scriptGenerating = on;
+}
+
+export function setScriptConfirmed(jobId: string, confirmed: boolean): void {
+  const state = store.get(jobId);
+  if (state) state.scriptConfirmed = confirmed;
+}
+
+// Sửa tay narration → edited=true, durationHint tính lại, bản duyệt cũ hết hiệu lực.
+export function updateSegment(
+  jobId: string,
+  segId: string,
+  patch: { narration?: string },
+): ScriptSegment {
+  const { state, script } = requireScript(jobId);
+  const seg = script.find((s) => s.id === segId);
+  if (!seg) throw new Error('Không tìm thấy đoạn kịch bản');
+  if (patch.narration !== undefined) {
+    seg.narration = patch.narration;
+    seg.durationHint = estimateSeconds(patch.narration);
+    seg.edited = true;
+  }
+  state.scriptConfirmed = false;
+  return seg;
+}
+
+// Xoá 1 đoạn + re-sequence order (mẫu deleteBeat). segId lạ → throw (route trả 404 trước).
+export function deleteSegment(jobId: string, segId: string): ScriptSegment[] {
+  const { state, script } = requireScript(jobId);
+  const idx = script.findIndex((s) => s.id === segId);
+  if (idx === -1) throw new Error('Không tìm thấy đoạn kịch bản');
+  script.splice(idx, 1);
+  resequence(script);
+  state.scriptConfirmed = false;
+  return script;
+}
+
+// Gộp 2 đoạn LIỀN KỀ: shots nối theo thứ tự, narration nối bằng khoảng trắng (người sửa lại).
+export function mergeSegments(jobId: string, segIdA: string, segIdB: string): ScriptSegment[] {
+  const { state, script } = requireScript(jobId);
+  const ia = script.findIndex((s) => s.id === segIdA);
+  const ib = script.findIndex((s) => s.id === segIdB);
+  if (ia === -1 || ib === -1) throw new Error('Không tìm thấy đoạn kịch bản');
+  if (Math.abs(ia - ib) !== 1) throw new Error('Chỉ gộp được hai đoạn liền kề');
+  const [first, second] = ia < ib ? [script[ia], script[ib]] : [script[ib], script[ia]];
+  first.narration = [first.narration, second.narration].filter(Boolean).join(' ');
+  first.shots = [...first.shots, ...second.shots];
+  if (first.sourceBeatIds || second.sourceBeatIds) {
+    first.sourceBeatIds = [...(first.sourceBeatIds ?? []), ...(second.sourceBeatIds ?? [])];
+  }
+  first.durationHint = estimateSeconds(first.narration);
+  first.edited = true;
+  script.splice(script.indexOf(second), 1);
+  resequence(script);
+  state.scriptConfirmed = false;
+  return script;
+}
+
+// Tách 1 đoạn tại biên shot: shots[0..at) giữ ở đoạn đầu (kèm narration), shots[at..] sang
+// đoạn mới narration rỗng (người điền). Đoạn 1 shot không tách được.
+export function splitSegment(jobId: string, segId: string, atShotIndex: number): ScriptSegment[] {
+  const { state, script } = requireScript(jobId);
+  const idx = script.findIndex((s) => s.id === segId);
+  if (idx === -1) throw new Error('Không tìm thấy đoạn kịch bản');
+  const seg = script[idx];
+  if (!Number.isInteger(atShotIndex) || atShotIndex < 1 || atShotIndex >= seg.shots.length) {
+    throw new Error('Vị trí tách phải nằm giữa hai shot của đoạn');
+  }
+  const movedShots = seg.shots.splice(atShotIndex);
+  // sourceBeatIds chỉ tách kèm khi còn song song 1:1 với shots (sau merge lệch thì thôi —
+  // metadata truy vết, không load-bearing).
+  const beatIdsAligned =
+    seg.sourceBeatIds !== undefined &&
+    seg.sourceBeatIds.length === seg.shots.length + movedShots.length;
+  const movedBeatIds = beatIdsAligned ? seg.sourceBeatIds!.splice(atShotIndex) : undefined;
+  seg.edited = true;
+  const next: ScriptSegment = {
+    id: crypto.randomUUID(),
+    order: seg.order + 1,
+    narration: '',
+    shots: movedShots,
+    ...(movedBeatIds !== undefined ? { sourceBeatIds: movedBeatIds } : {}),
+    durationHint: 0,
+    edited: true,
+  };
+  script.splice(idx + 1, 0, next);
+  resequence(script);
+  state.scriptConfirmed = false;
+  return script;
+}
+
+// Di chuyển đoạn tới vị trí order mới (clamp, mẫu reorderBeat).
+export function reorderSegment(jobId: string, segId: string, to: number): ScriptSegment[] {
+  const { state, script } = requireScript(jobId);
+  const idx = script.findIndex((s) => s.id === segId);
+  if (idx === -1) throw new Error('Không tìm thấy đoạn kịch bản');
+  const target = Math.max(0, Math.min(Math.trunc(to), script.length - 1));
+  const [seg] = script.splice(idx, 1);
+  script.splice(target, 0, seg);
+  resequence(script);
+  state.scriptConfirmed = false;
+  return script;
+}
+
+export function setSegmentAudio(jobId: string, segId: string, audio: SegmentAudio): void {
+  const state = store.get(jobId);
+  if (!state) return;
+  (state.ttsAudio ??= new Map()).set(segId, audio);
+}
+
+export function getSegmentAudio(jobId: string, segId: string): SegmentAudio | undefined {
+  return store.get(jobId)?.ttsAudio?.get(segId);
+}
+
+export function toScriptDTO(state: StoryboardState): ScriptDTO {
+  return {
+    jobId: state.jobId,
+    confirmed: state.scriptConfirmed === true,
+    segments: (state.script ?? []).map((seg) => ({
+      ...seg,
+      shots: seg.shots.map((sh) => ({ ...sh, region: sh.region ? { ...sh.region } : null })),
+      ...(seg.sourceBeatIds !== undefined ? { sourceBeatIds: [...seg.sourceBeatIds] } : {}),
+    })),
   };
 }
 

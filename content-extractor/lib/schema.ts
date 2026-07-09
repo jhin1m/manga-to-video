@@ -158,6 +158,166 @@ export function toStoryboardManifest(s: {
   };
 }
 
+// ==== Stage 2: Kịch bản AI (script layer) ====
+
+// Một shot của segment: trỏ working image theo index (không pixel-copy). region null = cả band.
+// weight quyết định tỉ lệ thời lượng shot trong segment (chuẩn hoá khi dựng timeline).
+export interface Shot {
+  sourceIndex: number;
+  region: BeatRegion | null;
+  weight: number;
+}
+
+// Một đoạn kể của kịch bản: 1 narration ↔ 1+ shot (gộp = nhiều shot; tách = nhiều segment
+// cùng sourceIndex). Hợp đồng cho Preview UI (P4) + CLI render (P5/P6).
+export interface ScriptSegment {
+  id: string;
+  order: number;
+  narration: string;
+  shots: Shot[];
+  sourceBeatIds?: string[]; // truy vết beat gốc
+  durationHint?: number; // giây — chỉ dùng cho preview im lặng; audio TTS là nhạc trưởng
+  edited?: boolean; // người dùng đã duyệt/sửa
+}
+
+export interface ScriptManifest {
+  version: number;
+  jobId: string;
+  createdAt: string;
+  segmentCount: number;
+  segments: ScriptSegment[];
+}
+
+export const SCRIPT_VERSION = 1;
+
+export function toScriptManifest(s: {
+  jobId: string;
+  createdAt: string;
+  segments: ScriptSegment[];
+}): ScriptManifest {
+  return {
+    version: SCRIPT_VERSION,
+    jobId: s.jobId,
+    createdAt: s.createdAt,
+    segmentCount: s.segments.length,
+    segments: [...s.segments]
+      .sort((a, b) => a.order - b.order)
+      .map((seg) => ({
+        id: seg.id,
+        order: seg.order,
+        narration: seg.narration,
+        shots: seg.shots.map((sh) => ({
+          sourceIndex: sh.sourceIndex,
+          region: sh.region ? { ...sh.region } : null,
+          weight: sh.weight,
+        })),
+        ...(seg.sourceBeatIds !== undefined ? { sourceBeatIds: [...seg.sourceBeatIds] } : {}),
+        durationHint: seg.durationHint ?? estimateSeconds(seg.narration),
+        ...(seg.edited !== undefined ? { edited: seg.edited } : {}),
+      })),
+  };
+}
+
+// DTO kịch bản trả qua API — kèm cờ confirmed (khoá duyệt, mở đường "Dựng video").
+export interface ScriptDTO {
+  jobId: string;
+  confirmed: boolean;
+  segments: ScriptSegment[];
+}
+
+// ==== Stage 2: RenderConfig (tham số render — Preview UI ↔ CLI) ====
+
+export type Aspect = '9:16' | '16:9' | '1:1';
+
+export interface SubtitleStyle {
+  export: boolean; // luôn xuất .srt rời
+  burnIn: boolean; // cháy chữ vào video
+  font: string;
+  sizePct: number; // % chiều cao khung hình
+  color: string; // hex #rrggbb
+  outline: boolean;
+  position: 'top' | 'middle' | 'bottom';
+  marginPct: number; // % chiều cao khung tính từ mép theo position
+}
+
+export interface RenderConfig {
+  version: number;
+  aspect: Aspect;
+  fps: number;
+  subtitles: SubtitleStyle;
+  // bgm.path: đường dẫn TRONG bundle (bgm/<file>) hoặc đường dẫn đĩa khi chạy CLI trực tiếp.
+  bgm: { path: string | null; volume: number; duckDb: number };
+  tts: { voiceId: string; model: string };
+  kenburns: { zoom: number }; // hệ số zoom đích cho shot gần vuông (1 = tĩnh)
+  segmentOverrides?: Record<string, { durationSec?: number }>;
+}
+
+export const RENDER_CONFIG_VERSION = 1;
+
+export function defaultRenderConfig(): RenderConfig {
+  return {
+    version: RENDER_CONFIG_VERSION,
+    aspect: '9:16',
+    fps: 30,
+    subtitles: {
+      export: true,
+      burnIn: true,
+      font: 'Be Vietnam Pro',
+      sizePct: 4.5,
+      color: '#ffffff',
+      outline: true,
+      position: 'bottom',
+      marginPct: 8,
+    },
+    bgm: { path: null, volume: 0.3, duckDb: -12 },
+    tts: { voiceId: '', model: '' }, // rỗng = lấy từ ENV ELEVENLABS_* lúc synth
+    kenburns: { zoom: 1.12 },
+  };
+}
+
+// ==== File project .mtvproj (bản lưu cả phiên làm việc) ====
+// Zip tự chứa: project.json (meta dưới đây) + manifest.json (Stage 1) + storyboard.json
+// + script.json (tuỳ) + working/<sourceIndex>.jpg + items/band-<index>.jpg
+// + audio/seg-<segId>.mp3 (tuỳ). Mở lại = hydrate store, KHÔNG re-ingest → không phụ
+// thuộc env (MAX_EDGE/SPLIT_HEIGHT), toạ độ region khớp tuyệt đối.
+
+export const PROJECT_VERSION = 1;
+
+// Kích thước ảnh working — bytes nằm ở working/<sourceIndex>.jpg trong zip.
+export interface ProjectWorkingMeta {
+  sourceIndex: number;
+  width: number;
+  height: number;
+}
+
+// Metadata band Stage 1 — filename/content/error nằm ở manifest.json (song song theo index).
+export interface ProjectItemMeta {
+  index: number;
+  mime: string;
+  width: number;
+  height: number;
+}
+
+// Audio TTS đã synth cho một segment: bytes ở audio/seg-<segId>.mp3. key = tên file trong
+// cache đĩa (sha256 của text+voice+model) — import ghi lại đúng <TTS_CACHE_DIR>/<key>.mp3
+// để preview/CLI tiếp tục HIT cache, không gọi lại ElevenLabs.
+export interface ProjectAudioMeta {
+  key: string;
+  durationSec: number;
+  text: string;
+}
+
+export interface ProjectFile {
+  version: number;
+  jobId: string;
+  createdAt: string;
+  sourceKind: SourceKind;
+  working: ProjectWorkingMeta[];
+  items: ProjectItemMeta[];
+  scriptConfirmed?: boolean;
+  audio?: Record<string, ProjectAudioMeta>; // segId → meta
+}
+
 // Nhận shape cấu trúc tối thiểu (Job nội bộ thỏa mãn về mặt structural typing)
 // để schema.ts không phụ thuộc kiểu Node.
 export function toManifest(job: {

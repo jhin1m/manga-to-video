@@ -1,20 +1,22 @@
-# Manga Content Extractor (Stage 1 + 1.5)
+# Manga Content Extractor (Stage 1 + 1.5 + 2)
 
-Tool nội bộ, một người vận hành. Xử lý manga theo hai stage:
+Tool nội bộ, một người vận hành. Xử lý manga theo ba stage:
 
 **Stage 1:** Nhận chapter (nhiều ảnh đánh số / file zip / file PDF) → **gộp toàn bộ thành một canvas dọc rồi chia lại thành band tại gutter** (khoảng trắng ngang dày) — mỗi band giữ trọn một đơn vị nội dung (nhân vật kèm bong bóng), không cắt ngang bubble/chữ → gọi vision LLM (OpenAI-compatible) → bảng nội dung từng band (`mô tả + thoại + ghi chú`, tiếng Việt) → sửa tay inline → xuất **JSON manifest**.
 
 **Stage 1.5:** Từ chapter hoặc manifest, tạo **storyboard** = danh sách nhịp hình ảnh + lời đọc (dành cho TTS + video tạo Ken Burns). Mỗi band từ lúc upload = 1 nhịp — biên nhịp đã chuẩn từ ingest nên không cần tách/gộp tay. Nhịp thiếu nội dung (chưa chạy Stage 1) bấm **Generate** (vision) hoặc điền tay.
 
-Không DB, không auth, không queue. Job sống trong RAM — restart server là mất; **file JSON export chính là bản lưu**.
+**Stage 2:** **Kịch bản AI + Video.** Model text (biên kịch) đọc nội dung mọi band → viết kịch bản kể mạch lạc, **gộp/tách band** thành `ScriptSegment[]` (1 lời kể ↔ 1+ shot) → người duyệt/sửa/chốt ở UI → preview video xấp xỉ (`/video/{jobId}`, Ken Burns CSS + phụ đề live + BGM) → export **bundle.zip** → CLI ffmpeg render **MP4 + .srt + timeline.json**. Bất biến sync: audio TTS là nhạc trưởng — narration khớp cứng với segment, audio phân bổ cho các shot theo weight.
+
+Không DB, không auth, không queue. Job sống trong RAM — restart server là mất; **file JSON export / bundle.zip chính là bản lưu**.
 
 ## Chạy
 
-Yêu cầu Node 24 (`.nvmrc` đã pin; máy dùng Herd nvm thì `nvm use 24`).
+Yêu cầu Node 24 (`.nvmrc` đã pin; máy dùng Herd nvm thì `nvm use 24`). Stage 2 render cần **ffmpeg/ffprobe** (`brew install ffmpeg` — burn-in phụ đề cần bản build có libass; thiếu libass CLI tự bỏ burn-in và giữ `.srt` rời, có cảnh báo).
 
 ```bash
 npm install
-cp .env.example .env.local   # rồi điền OPENAI_API_KEY
+cp .env.example .env.local   # rồi điền OPENAI_API_KEY (+ ELEVENLABS_API_KEY nếu dựng video)
 npm run dev                  # http://localhost:3000
 ```
 
@@ -33,6 +35,25 @@ npm run dev                  # http://localhost:3000
 | `VISION_DISABLE_THINKING` | Tắt "thinking/reasoning" của model (GLM z.ai) để tiết kiệm ~50% token | `false` |
 
 Chuyển sang Z.AI GLM: `OPENAI_BASE_URL=https://api.z.ai/api/paas/v4` + `VISION_MODEL=glm-4.5v` + `VISION_DISABLE_THINKING=true`.
+
+**Kịch bản AI (Stage 2 — biên kịch)**
+
+| Biến | Ý nghĩa | Mặc định |
+|------|---------|----------|
+| `SCRIPT_MODEL` | Model text viết kịch bản (gộp/tách band thành đoạn kể) | `gpt-4o` |
+| `SCRIPT_API_KEY` / `SCRIPT_BASE_URL` | Chỉ đặt khi biên kịch dùng NHÀ CUNG CẤP KHÁC vision — mặc định dùng chung `OPENAI_*` | — |
+| `SCRIPT_DISABLE_THINKING` | Tắt thinking/reasoning của model biên kịch | `false` |
+
+**TTS ElevenLabs (Stage 2 — giọng đọc)**
+
+| Biến | Ý nghĩa | Mặc định |
+|------|---------|----------|
+| `ELEVENLABS_API_KEY` | API key (bắt buộc khi synth audio) | — |
+| `ELEVENLABS_VOICE_ID` | Giọng đọc | `21m00Tcm4TlvDq8ikWAM` (Rachel) |
+| `ELEVENLABS_MODEL` | Cả 3 tier chọn qua ENV: `eleven_multilingual_v2` (chất lượng) / `eleven_turbo_v2_5` (rẻ ~50%) / `eleven_flash_v2_5` (nhanh, nháp) | `eleven_multilingual_v2` |
+| `ELEVENLABS_BASE_URL` | Endpoint — chỉ đổi khi test với mock | `https://api.elevenlabs.io` |
+| `TTS_CACHE_DIR` | Cache mp3 trên đĩa theo hash text+voice+model: preview synth 1 lần, CLI tái dùng, **không gọi API lần 2** | `.cache/tts` |
+| `SUBS_FONTS_DIR` | Thư mục font cho burn-in phụ đề (font Việt đủ dấu không nằm trong hệ thống) | — |
 
 **Ingest gộp + chia band (mọi upload)**
 
@@ -61,17 +82,30 @@ Chuyển sang Z.AI GLM: `OPENAI_BASE_URL=https://api.z.ai/api/paas/v4` + `VISION
 ## Luồng sử dụng (Stage 1.5 — Storyboard)
 
 1. Tạo storyboard qua nút **"Tạo storyboard"** (trang chính) hoặc trực tiếp `/api/jobs/{id}/storyboard` → **mỗi band = 1 nhịp**, region `null` (trọn band), narration pre-fill từ content Stage 1 (template thuần, không gọi vision).
-2. Trang `/storyboard/{jobId}` hiển thị danh sách nhịp + preview hình.
-3. Biên tập nhịp:
+2. Trang `/storyboard/{jobId}` bố cục **master–detail**: cột trái = danh sách nhịp gọn (thumbnail + reorder ▲▼), cột phải = chi tiết nhịp đang chọn.
+3. Biên tập nhịp (panel chi tiết):
+   - **Region**: **kéo khung trên ảnh** để chọn vùng, kéo trong khung để di chuyển; toggle "Cả trang"; khối "Nâng cao" giữ numeric x/y/w/h (đồng bộ 2 chiều, chỉnh bằng bàn phím).
    - **Narration** (lời đọc): sửa tay, durationHint tự cập nhật theo độ dài.
-   - **Region**: input số x/y/w/h (hoặc tick "Cả trang").
    - **Generate ✨**: gọi vision cho riêng nhịp đó (crop vùng nhịp → mô tả + thoại) — dùng khi chưa chạy Stage 1, khi band lỗi, hoặc muốn soạn lại từ ảnh.
-   - **Reorder** (▲▼): xếp thứ tự nhịp.
    - **Xoá**: bỏ hẳn một nhịp khỏi storyboard (re-order phần còn lại; chỉ khi không đang compose).
-4. Export → tải `storyboard-<jobId>.json` (manifest v1, hợp đồng cho TTS/video).
-5. Import: upload manifest + đúng bộ ảnh gốc → ingest gộp + chia band tái lập y phiên export (cần cùng `MAX_EDGE`/`SPLIT_HEIGHT`…).
+4. **Lưu project** (top bar) → tải `project-<jobId>.mtvproj` (zip tự chứa: data + ảnh working/band + audio đã synth). Store server là in-memory — file này là bản lưu duy nhất của phiên làm việc.
+5. **Mở project** (top bar) → chọn 1 file `.mtvproj` → hydrate lại Job + Storyboard + Kịch bản + Audio, **không cần chọn lại ảnh rời, không re-ingest, không phụ thuộc env** — toạ độ region khớp tuyệt đối. Tự điều hướng tới stage phù hợp (storyboard / kịch bản / video).
 
 Có thể tạo storyboard **ngay từ phase xem trước** (chưa chạy Stage 1): mọi nhịp trống → bấm Generate từng nhịp cần thiết, không đốt vision cho cả chapter.
+
+## Luồng sử dụng (Stage 2 — Kịch bản AI + Video)
+
+1. Ở trang **`/script/{jobId}`** (mở qua stepper khi storyboard xong), bấm **"Tạo kịch bản AI"** → model text đọc content mọi band (band thiếu content được vision fallback tự mô tả, lỗi cô lập) → đề xuất `ScriptSegment[]` (gộp band liền kề / tách band dày).
+2. Duyệt kịch bản: **sửa narration inline · gộp với đoạn dưới · tách tại biên shot (✂) · re-order (▲▼) · xoá**. Band bỏ sót có cảnh báo count-mismatch. Không ưng → **"Tạo lại kịch bản"**.
+3. **"Xác nhận kịch bản"** → mở nút **"Dựng video"** → `/video/{jobId}` (sửa đoạn nào sau đó phải xác nhận lại).
+4. Trang preview: phát duyệt Ken Burns **xấp xỉ CSS** (nói rõ trên UI — MP4 từ CLI mới là chân lý), chỉnh **phụ đề (font/cỡ/màu/vị trí/lề) live**, **khung hình 9:16 · 16:9 · 1:1**, **BGM** (file + volume + duck), zoom. Hai chế độ: **im lặng** (durationHint, free) ↔ **"Synth audio"** (ElevenLabs → timing thật, nghe được; vào cache đĩa).
+5. **"Export để render"** → tải `bundle-{jobId}.zip` (manifest + ảnh band + render-config + audio đã synth + BGM).
+6. Render MP4:
+   ```bash
+   npm run render -- bundle-<jobId>.zip --aspect 9:16 --out out.mp4
+   npm run render -- bundle-<jobId>.zip --dry-run     # chỉ timeline.json + .srt, không TTS/ffmpeg
+   ```
+   Flags: `--aspect 9:16|16:9|1:1` · `--fps N` · `--bgm file` · `--subs srt|burn|both` · `--keep` (giữ `.render/<jobId>/` debug). Cùng bundle đổi `--aspect` ra 2 MP4 — TTS ăn cache, **không gọi ElevenLabs lại**. Đầu ra: `out.mp4` + `out.srt` (caption **tách theo câu**, luôn xuất) + `out.timeline.json` (bảng review khớp timing video).
 
 ## API (Stage 1)
 
@@ -94,7 +128,6 @@ Có thể tạo storyboard **ngay từ phase xem trước** (chưa chạy Stage 
 | POST | `/api/jobs/{id}/storyboard` | không body → tạo storyboard từ job (1 band = 1 nhịp, narration từ content Stage 1). Trả về `{jobId, createdAt, sourceKind, progress, working, beats}` ở phase `queued` |
 | GET | `/api/jobs/{id}/storyboard` | trạng thái + beat hiện tại |
 | GET | `/api/jobs/{id}/storyboard/stream` | SSE tiến độ compose |
-| GET | `/api/jobs/{id}/storyboard/export` | storyboard manifest JSON (v1) |
 | PATCH | `/api/jobs/{id}/storyboard/beats/{beatId}` | sửa beat `{narration?, region?, order?}` (region chuẩn: x/y ≥ 0, w/h ≥ 1, trong biên ảnh nguồn) |
 | DELETE | `/api/jobs/{id}/storyboard/beats/{beatId}` | xoá nhịp (re-order phần còn lại). `404` beat/storyboard không có, `409` khi đang compose |
 | POST | `/api/jobs/{id}/storyboard/beats/{beatId}/generate` | **Generate bằng vision**: crop vùng nhịp → mô tả + thoại → narration (lỗi cô lập vào beat) |
@@ -102,7 +135,30 @@ Có thể tạo storyboard **ngay từ phase xem trước** (chưa chạy Stage 
 | GET | `/api/jobs/{id}/storyboard/beats/{beatId}/crop` | preview crop JPEG theo region hiện tại |
 | POST | `/api/jobs/{id}/storyboard/beats/reorder` | body `{beatId, to}` → sắp xếp lại |
 | GET | `/api/jobs/{id}/storyboard/working/{i}/image` | preview working image (ảnh band) |
-| POST | `/api/storyboard/import` | multipart (`manifest`, `images[]`/`zip`) → tạo job mới (ingest gộp + chia band như upload) + nạp lại storyboard từ manifest |
+
+## API (Project file — .mtvproj)
+
+| Method | Route | Chức năng |
+|--------|-------|-----------|
+| GET | `/api/project/export?jobId={id}` | tải `project-{jobId}.mtvproj` (zip: project.json + manifest.json + storyboard.json + script.json + `working/*.jpg` + `items/band-*.jpg` + `audio/seg-*.mp3`) |
+| POST | `/api/project/import` | multipart field `file` (.mtvproj) → hydrate Job + Storyboard + Script + Audio (audio ghi lại vào `TTS_CACHE_DIR` để tiếp tục HIT cache) → `{jobId, stage}` |
+
+## API (Stage 2 — Kịch bản + TTS + Bundle)
+
+| Method | Route | Chức năng |
+|--------|-------|-----------|
+| POST | `/api/jobs/{id}/storyboard/script` | Tạo kịch bản AI: content tươi từng band (+ vision fallback band thiếu) → model text gộp/tách → `{jobId, confirmed, segments}`. `409` khi đang compose/generate |
+| GET | `/api/jobs/{id}/storyboard/script` | kịch bản hiện tại |
+| PATCH | `/api/jobs/{id}/storyboard/script/segments/{segId}` | sửa `{narration}` → `edited=true`, durationHint tính lại |
+| DELETE | `/api/jobs/{id}/storyboard/script/segments/{segId}` | xoá đoạn (re-order) |
+| POST | `/api/jobs/{id}/storyboard/script/segments/merge` | body `{segIds:[a,b]}` — gộp 2 đoạn liền kề |
+| POST | `/api/jobs/{id}/storyboard/script/segments/split` | body `{segId, atShotIndex}` — tách tại biên shot |
+| POST | `/api/jobs/{id}/storyboard/script/segments/reorder` | body `{segId, to}` |
+| POST | `/api/jobs/{id}/storyboard/script/confirm` | chốt kịch bản (mọi mutator sau đó tự reset cờ) |
+| POST | `/api/jobs/{id}/storyboard/tts` | body `{segIds?, voiceId?, model?}` → synth từng đoạn (lỗi cô lập, cache đĩa) → `{results:[{segId, durationSec, audioUrl, cached}]}` |
+| GET | `/api/jobs/{id}/storyboard/tts/{segId}/audio` | stream mp3 từ cache (preview "có audio") |
+| GET | `/api/jobs/{id}/storyboard/export-bundle` | bundle.zip (config qua `?config=<json>`) |
+| POST | `/api/jobs/{id}/storyboard/export-bundle` | multipart `config` + file `bgm` → bundle.zip kèm BGM + audio đã synth (audio stale theo narration bị loại) |
 
 ## Manifest (Stage 1 — hợp đồng cho TTS v1)
 
@@ -172,37 +228,66 @@ Item lỗi chưa retry: `"error": "…"` + `content: null`.
 - `lib/stitch.ts` — nối các ảnh thành một canvas dọc (căn giữa slice hẹp).
 - `lib/smart-split.ts` — cắt band theo NGỮ CẢNH (kế thừa primitive safe-line của SmartStitch, jhin1m/manhwa-sticher): dò gutter (khoảng trắng dày) làm điểm cắt, bỏ qua khe hẹp nhân vật↔bong bóng, gộp band non nội dung.
 - `lib/narration.ts` — compose narration template từ content Stage 1; nhánh vision (Generate) crop vùng nhịp → describeImage; rev-guard per-beat.
-- `lib/storyboard-store.ts` — in-memory storyboard + working image (Map per-jobId, sống sót HMR).
+- `lib/storyboard-store.ts` — in-memory storyboard + working image + kịch bản Stage 2 (script + mutators gộp/tách/sửa + audio đã synth; Map per-jobId, sống sót HMR).
+
+**Stage 2 (kịch bản + video):**
+- `lib/script.ts` — biên kịch: `readScriptConfig` (ENV `SCRIPT_*`), vision fallback band thiếu content (lỗi cô lập), `generateScript` (model text → gộp/tách shotIndices, validate biên).
+- `lib/tts.ts` — ElevenLabs + **cache đĩa** (sha256 text+voice+model, ghi atomic `.tmp`→rename, metadata độ dài); text rỗng không synth.
+- `lib/bundle.ts` — đóng/mở bundle.zip (manifest + render-config + band + audio + bgm), validate version + band khớp shots.
+- `lib/timeline.ts` — **thuần, dùng chung UI+CLI**: `buildTimeline` (audio nhạc trưởng, sàn, phân bổ shot theo weight), `splitSentences`/`allocateCaptions`/`toSrt` (caption tách theo câu, canh giờ tỉ lệ ký tự), `toTimelineJson`.
+- `lib/kenburns.ts` — **thuần**: suy hướng pan/zoom từ region+aspect, blur-fill khi lệch tỉ lệ, kẹp vận tốc pan → chuỗi filtergraph ffmpeg.
+- `lib/ffmpeg.ts` — wrapper spawn (không thêm dep): assert/probe/renderShot/concat/audio-track/duck (sidechain)/burn subs (libass, degrade khi thiếu)/mux.
+- `scripts/render-video.mts` — CLI render (nguồn chân lý): bundle → TTS (cache) → timeline → Ken Burns per shot → concat + BGM duck + burn → MP4 + .srt + timeline.json; `--dry-run` không gọi TTS/ffmpeg.
 
 **Routes & UI:**
 - `app/api/jobs/**` — route Stage 1 (POST/GET/PATCH/DELETE item/POST retry).
 - `app/api/jobs/{id}/storyboard**` — route Stage 1.5 (POST create / PATCH+DELETE beat / POST generate-retry-reorder / GET crop-export-stream-working).
-- `app/api/storyboard/import` — nạp lại từ manifest + ảnh.
-- `app/page.tsx` — UI một trang: upload (gộp + chia band) → xem trước → [Chạy Stage 1 | Tạo storyboard] → progress → edit/export.
-- `app/storyboard/[jobId]/page.tsx` — UI storyboard: danh sách nhịp → chỉnh narration/region, Generate ✨ per-beat, reorder → export/import.
+- `app/api/jobs/{id}/storyboard/script**`, `tts**`, `export-bundle` — route Stage 2 (kịch bản + TTS + bundle).
+- `app/api/project/export|import` — file project `.mtvproj` (lưu/mở cả phiên làm việc, `lib/project.ts`).
+- `app/layout.tsx` + `components/app-shell.tsx` — app shell chung (top bar Lưu/Mở project + stepper 4 bước + theme toggle + toast); token shadcn/ui trong `app/globals.css`.
+- `app/page.tsx` — UI Trích xuất: upload (gộp + chia band) → xem trước → [Chạy Stage 1 | Tạo storyboard] → progress → edit/export.
+- `app/storyboard/[jobId]/page.tsx` — UI storyboard master–detail: list nhịp (trái) + chi tiết nhịp (phải) với chọn vùng kéo-thả (`components/region-cropper.tsx`), Generate ✨ per-beat, reorder.
+- `app/script/[jobId]/page.tsx` — trang Kịch bản AI: duyệt/gộp/tách/sửa/chốt → Dựng video.
+- `app/video/[jobId]/page.tsx` — Preview UI video: player Ken Burns CSS xấp xỉ + caption theo câu + panel khung hình/phụ đề/BGM/TTS → Synth audio → Export bundle.
 
 ## Kiểm thử
 
-**Unit tests** (ingest, banding, narration):
+**Unit tests** (ingest, banding, narration, script/timeline/bundle/kenburns/tts-cache):
 ```bash
-npm run test:unit
+npm run test:unit     # gồm cả verify-script (Stage 2) + verify-project (.mtvproj)
+npm run test:script   # riêng Stage 2 unit (mock model + mock ElevenLabs, không mạng thật)
+npm run test:project  # riêng round-trip + validate file project .mtvproj
 ```
-Kiểm tra downscale/bound, chia band theo gutter (giữ nhân vật+bong bóng, gộp band non), xoá band/nhịp (re-index/re-order), ingest gộp + chia band, narration compose (73 assert).
+Kiểm tra downscale/bound, chia band theo gutter, xoá band/nhịp, narration compose; Stage 2: generateScript (validate biên shotIndices), buildTimeline (audio nhạc trưởng/sàn/weight), toSrt caption tách câu, bundle round-trip, kenburns pan/zoom/blur-fill, TTS cache MISS/HIT.
+
+**E2E render (Stage 2, mock ElevenLabs — cần ffmpeg, thiếu tự SKIP):**
+```bash
+npm run test:render   # dry-run + MP4 9:16 + 16:9 + BGM duck + cache HIT (không gọi API thật)
+```
 
 **E2E test** (đầu tào cuối):
 ```bash
 npm run mock:vision   # Mock OpenAI vision (port 3106)
 PORT=3105 OPENAI_API_KEY=mock-key OPENAI_BASE_URL=http://localhost:3106/v1 \
 VISION_MODEL=mock-vision VISION_RPM=600 SPLIT_HEIGHT=1000 npm run dev
-npm run test:e2e      # upload band/Stage 1/storyboard/Generate/reorder/xoá band+nhịp/import/export/PDF (69 assert)
+npm run test:e2e      # upload band/Stage 1/storyboard/Generate/reorder/xoá band+nhịp/lưu-mở project/PDF
 ```
 
-Test scripts: `content-extractor/scripts/` (`verify-ingest.mts`, `verify-banding.mts`, `verify-narration.mts`, `mock-openai-vision.mjs`, `e2e-storyboard.mts`).
+**E2E route Stage 2** (kịch bản + TTS + bundle qua server thật — thêm mock script :3108 + mock ElevenLabs :3107 và env `SCRIPT_*`/`ELEVENLABS_*` trỏ mock vào lệnh start ở trên):
+```bash
+npm run mock:script && npm run mock:elevenlabs   # (2 terminal riêng)
+npm run test:e2e-video   # tạo kịch bản/duyệt-gộp-tách/confirm/tts cache/export-bundle (34 assert)
+```
+
+Test scripts: `content-extractor/scripts/` (`verify-ingest.mts`, `verify-banding.mts`, `verify-narration.mts`, `verify-script.mts`, `verify-render.mts`, `mock-openai-vision.mjs`, `mock-elevenlabs.mjs`, `mock-script-model.mjs`, `e2e-storyboard.mts`, `e2e-script-video.mts`).
 
 ## Known Limitations (v1, ghi nhận cho Stage 2)
 
-- **Import phụ thuộc env:** Band tái lập từ ảnh gốc — cần cùng `MAX_EDGE` + settings cắt band (`MIN_GUTTER_HEIGHT`/`MIN_BAND_HEIGHT`/`MAX_BAND_HEIGHT`/`MIN_INK_DENSITY`…) như phiên export, khác đi là `sourceIndex` lệch (được validate, báo 400). Cân nhắc nhúng settings vào manifest v2.
+- **Import phụ thuộc env (đã gỡ hẳn):** render đi qua **bundle.zip self-contained**; mở lại phiên làm việc đi qua **`.mtvproj` self-contained** (ảnh working embed) — không còn đường nào re-ingest hay phụ thuộc `MAX_EDGE`/settings cắt band.
 - **Memory canvas:** Mỗi upload stitch toàn bộ chapter thành một canvas rồi raw-decode khi smart-split — chapter rất dài tốn RAM tạm thời (dev tool chấp nhận, ghi chú).
 - **Xoá band sau khi đã tạo storyboard:** Storyboard là snapshot lúc tạo — xoá band ở lưới upload KHÔNG cập nhật ngược storyboard đã có (working buffer giữ bằng tham chiếu nên không lỗi). Bấm "Tạo storyboard" lại để đồng bộ.
 - **PDF trong zip:** Bỏ qua (chỉ nhận PDF upload trực tiếp).
-- **UI beat:** Kéo-thả handle chưa có — dùng input số x/y/w/h.
+- **UI beat:** chọn vùng bằng kéo-vẽ khung + kéo-di chuyển; **resize handle 4 góc chưa có** — chỉnh kích thước qua vẽ lại hoặc numeric "Nâng cao".
+- **Preview ≠ render:** Ken Burns CSS ở `/video/{jobId}` là xấp xỉ (duyệt bố cục/timing/style); MP4 từ CLI là chân lý. UI có ghi chú rõ.
+- **Burn-in cần libass:** Bản ffmpeg build thiếu libass (vd bottle slim) → CLI cảnh báo, bỏ burn-in, vẫn xuất `.srt` rời.
+- **Ngoài scope vòng sau:** transition giữa shot · multi-voice · nhạc theo cảm xúc · batch cả bộ · preview render-accurate (WebGL) · nhiều track BGM · AI tự chọn nhạc.
