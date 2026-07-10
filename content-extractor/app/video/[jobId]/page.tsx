@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { Package, Pause, Play, Sparkles } from 'lucide-react';
@@ -19,9 +19,11 @@ import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { PageShell } from '@/components/page-shell';
 import { useProject } from '@/components/project-context';
+import { useReducedMotion } from '@/components/use-reduced-motion';
 import type { RenderConfig, ScriptDTO, StoryboardDTO } from '@/lib/schema';
 import { defaultRenderConfig } from '@/lib/schema';
 import { planKenburns } from '@/lib/kenburns';
+import { ASPECT_CSS, kenburnsFrameStyle } from '@/lib/kenburns-css';
 import { allocateCaptions, buildTimeline, splitSentences, TIMELINE_DEFAULTS } from '@/lib/timeline';
 
 // Preview UI video (Stage 2): phát duyệt kịch bản dạng video — Ken Burns XẤP XỈ bằng CSS,
@@ -45,12 +47,6 @@ interface TtsResult {
   error?: string;
 }
 
-const ASPECT_CSS: Record<RenderConfig['aspect'], string> = {
-  '9:16': '9 / 16',
-  '16:9': '16 / 9',
-  '1:1': '1 / 1',
-};
-
 export default function VideoPreviewPage() {
   const { jobId } = useParams<{ jobId: string }>();
   const router = useRouter();
@@ -68,16 +64,7 @@ export default function VideoPreviewPage() {
   const [bgmUrl, setBgmUrl] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
   const [timeSec, setTimeSec] = useState(0);
-  // prefers-reduced-motion là external system → useSyncExternalStore (không setState trong effect)
-  const reducedMotion = useSyncExternalStore(
-    (cb) => {
-      const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
-      mq.addEventListener('change', cb);
-      return () => mq.removeEventListener('change', cb);
-    },
-    () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
-    () => false,
-  );
+  const reducedMotion = useReducedMotion();
   const rafRef = useRef<number | null>(null);
   const lastTsRef = useRef<number | null>(null);
   const narrationAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -320,18 +307,7 @@ export default function VideoPreviewPage() {
       fps: config.fps,
       zoom: config.kenburns.zoom,
     });
-    if (plan.mode === 'pan-v') {
-      // Ảnh phủ bề rộng khung; chạy dọc từ đầu tới cuối phần dư.
-      fgStyle = { width: '100%', height: 'auto' };
-      imgTransformStyle = { transform: `translateY(calc((100cqh - 100%) * ${p.toFixed(4)}))` };
-    } else if (plan.mode === 'pan-h') {
-      fgStyle = { height: '100%', width: 'auto', maxWidth: 'none' };
-      imgTransformStyle = { transform: `translateX(calc((100cqw - 100%) * ${p.toFixed(4)}))` };
-    } else {
-      const scale = 1 + (Math.max(1, config.kenburns.zoom) - 1) * p;
-      fgStyle = { width: '100%', height: '100%', objectFit: 'contain' };
-      imgTransformStyle = { transform: `scale(${scale.toFixed(4)})` };
-    }
+    ({ fgStyle, imgTransformStyle } = kenburnsFrameStyle(plan, p, config.kenburns.zoom));
   }
 
   // Caption hiện theo CÂU (dùng chung logic tách câu + canh giờ với toSrt của CLI).
