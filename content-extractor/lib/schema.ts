@@ -247,7 +247,8 @@ export interface RenderConfig {
   subtitles: SubtitleStyle;
   // bgm.path: đường dẫn TRONG bundle (bgm/<file>) hoặc đường dẫn đĩa khi chạy CLI trực tiếp.
   bgm: { path: string | null; volume: number; duckDb: number };
-  tts: { voiceId: string; model: string };
+  // provider: rỗng = lấy ENV TTS_PROVIDER lúc synth (mặc định elevenlabs); 'elevenlabs' | 'capcut'.
+  tts: { provider: string; voiceId: string; model: string };
   kenburns: { zoom: number }; // hệ số zoom đích cho shot gần vuông (1 = tĩnh)
   segmentOverrides?: Record<string, { durationSec?: number }>;
 }
@@ -270,7 +271,7 @@ export function defaultRenderConfig(): RenderConfig {
       marginPct: 8,
     },
     bgm: { path: null, volume: 0.3, duckDb: -12 },
-    tts: { voiceId: '', model: '' }, // rỗng = lấy từ ENV ELEVENLABS_* lúc synth
+    tts: { provider: '', voiceId: '', model: '' }, // rỗng = lấy từ ENV (TTS_PROVIDER + ELEVENLABS_*) lúc synth
     kenburns: { zoom: 1.12 },
   };
 }

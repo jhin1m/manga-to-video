@@ -3,60 +3,61 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { probeDurationSec } from './ffmpeg';
-import { withRetry } from './vision';
+import { DEFAULT_PROVIDER_ID, getTtsProvider } from './tts-providers';
+import type { TtsConfig } from './tts-providers';
 
-// TTS ElevenLabs với CACHE ĐĨA dùng chung giữa Preview UI và CLI: preview synth 1 lần,
-// CLI tái dùng — không gọi API (tính tiền theo ký tự) lần 2 cho cùng text+voice+model.
-// Provider qua ENV; ghi atomic (.tmp → rename) chống cache corrupt.
+// TTS với CACHE ĐĨA dùng chung giữa Preview UI và CLI: preview synth 1 lần, CLI tái dùng —
+// không gọi lại API cho cùng text+voice+model. Provider cắm được (ElevenLabs, CapCut, …):
+// lib này lo cache/atomic/probe, provider chỉ lo text → mp3. Ghi atomic (.tmp → rename)
+// chống cache corrupt.
 
-export interface TtsConfig {
-  apiKey: string;
-  baseUrl: string;
-  voiceId: string;
-  model: string;
-  cacheDir: string;
+export type { TtsConfig } from './tts-providers';
+
+// Resolve provider: arg > ENV TTS_PROVIDER > 'elevenlabs'. Validate sớm (throw tiếng Việt
+// nếu id lạ) để route trả lỗi rõ ràng trước khi synth.
+function resolveProviderId(override?: string): string {
+  const id = (override || process.env.TTS_PROVIDER || DEFAULT_PROVIDER_ID).trim() || DEFAULT_PROVIDER_ID;
+  getTtsProvider(id); // ném lỗi nếu không hợp lệ
+  return id;
 }
 
-export function readTtsConfig(overrides?: { voiceId?: string; model?: string }): TtsConfig {
-  const apiKey = process.env.ELEVENLABS_API_KEY;
-  if (!apiKey) {
-    throw new Error('Thiếu ELEVENLABS_API_KEY — khai báo trong .env.local (xem .env.example).');
-  }
+export function readTtsConfig(overrides?: {
+  provider?: string;
+  voiceId?: string;
+  model?: string;
+}): TtsConfig {
+  const provider = resolveProviderId(overrides?.provider);
+  const isElevenlabs = provider === 'elevenlabs';
   return {
-    apiKey,
+    provider,
+    // apiKey không còn ném lỗi tại đây — provider ElevenLabs tự kiểm khi thực sự synth,
+    // nên chọn CapCut không bắt buộc khai báo ELEVENLABS_API_KEY.
+    apiKey: process.env.ELEVENLABS_API_KEY || '',
     baseUrl: (process.env.ELEVENLABS_BASE_URL || 'https://api.elevenlabs.io').replace(/\/$/, ''),
-    voiceId: overrides?.voiceId || process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM',
-    model: overrides?.model || process.env.ELEVENLABS_MODEL || 'eleven_multilingual_v2',
+    // Default giọng/model theo ElevenLabs CHỈ khi provider là elevenlabs — giữ NGUYÊN cache
+    // key cũ. Provider khác tự resolve giọng mặc định trong synth (vd CapCut → CAPCUT_VOICE).
+    voiceId:
+      overrides?.voiceId || (isElevenlabs ? process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM' : ''),
+    model:
+      overrides?.model || (isElevenlabs ? process.env.ELEVENLABS_MODEL || 'eleven_multilingual_v2' : ''),
     cacheDir: process.env.TTS_CACHE_DIR || path.join('.cache', 'tts'),
   };
 }
 
-// Key cache gồm cả voice + model — đổi giọng/tier không lẫn audio cũ.
-export function ttsCacheKey(text: string, voiceId: string, model: string): string {
-  return createHash('sha256').update(`${text}\x00${voiceId}\x00${model}`).digest('hex');
-}
-
-function statusOf(res: Response): Error & { status: number } {
-  const err = new Error(`ElevenLabs HTTP ${res.status}`) as Error & { status: number };
-  err.status = res.status;
-  return err;
-}
-
-async function fetchTts(text: string, cfg: TtsConfig): Promise<Buffer> {
-  const res = await fetch(`${cfg.baseUrl}/v1/text-to-speech/${cfg.voiceId}`, {
-    method: 'POST',
-    headers: {
-      'xi-api-key': cfg.apiKey,
-      'content-type': 'application/json',
-      accept: 'audio/mpeg',
-    },
-    body: JSON.stringify({ text, model_id: cfg.model }),
-    // Kết nối treo không được ghim cả CLI/route vô hạn — timeout ném lỗi không status,
-    // withRetry coi là lỗi mạng và thử lại.
-    signal: AbortSignal.timeout(120_000),
-  });
-  if (!res.ok) throw statusOf(res); // status gắn kèm → withRetry phân loại 429/5xx
-  return Buffer.from(await res.arrayBuffer());
+// Key cache gồm voice + model — đổi giọng/tier không lẫn audio cũ. ElevenLabs GIỮ NGUYÊN
+// công thức cũ sha256(text\0voice\0model) để không vô hiệu cache đã trả phí; provider khác
+// thêm prefix provider để không đụng cache ElevenLabs cùng text/voice/model.
+export function ttsCacheKey(
+  text: string,
+  voiceId: string,
+  model: string,
+  provider: string = DEFAULT_PROVIDER_ID,
+): string {
+  const material =
+    provider === 'elevenlabs'
+      ? `${text}\x00${voiceId}\x00${model}`
+      : `${provider}\x00${text}\x00${voiceId}\x00${model}`;
+  return createHash('sha256').update(material).digest('hex');
 }
 
 export interface SynthResult {
@@ -71,7 +72,12 @@ export interface SynthResult {
 // (khỏi ffprobe lại khi HIT).
 export async function synthSegment(text: string, cfg: TtsConfig): Promise<SynthResult> {
   const trimmed = text.trim();
-  const key = ttsCacheKey(trimmed, cfg.voiceId, cfg.model);
+  const provider = getTtsProvider(cfg.provider || DEFAULT_PROVIDER_ID);
+  // Giọng dùng cho key phải là giọng SẼ synth: provider resolve default từ ENV khi voiceId
+  // rỗng (vd CapCut) → tránh HIT nhầm audio khi đổi giọng mặc định. ElevenLabs không khai báo
+  // resolveVoiceId (readTtsConfig đã điền sẵn voiceId) → key giữ nguyên công thức cũ.
+  const voiceForKey = provider.resolveVoiceId ? provider.resolveVoiceId(cfg) : cfg.voiceId;
+  const key = ttsCacheKey(trimmed, voiceForKey, cfg.model, provider.id);
   if (trimmed === '') {
     return { mp3Path: '', durationSec: 0, cached: true, key };
   }
@@ -96,7 +102,7 @@ export async function synthSegment(text: string, cfg: TtsConfig): Promise<SynthR
     return { mp3Path, durationSec, cached: true, key };
   }
 
-  const audio = await withRetry(() => fetchTts(trimmed, cfg));
+  const audio = await provider.synth(trimmed, cfg);
   await writeAtomic(mp3Path, audio);
   const durationSec = await probeDurationSec(mp3Path);
   await writeAtomic(metaPath, JSON.stringify({ durationSec }));

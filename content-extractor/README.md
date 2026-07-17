@@ -44,15 +44,25 @@ Chuyển sang Z.AI GLM: `OPENAI_BASE_URL=https://api.z.ai/api/paas/v4` + `VISION
 | `SCRIPT_API_KEY` / `SCRIPT_BASE_URL` | Chỉ đặt khi biên kịch dùng NHÀ CUNG CẤP KHÁC vision — mặc định dùng chung `OPENAI_*` | — |
 | `SCRIPT_DISABLE_THINKING` | Tắt thinking/reasoning của model biên kịch | `false` |
 
-**TTS ElevenLabs (Stage 2 — giọng đọc)**
+**TTS (Stage 2 — giọng đọc): 2 provider**
+
+Hai provider chọn được. Chọn **per-project** bằng dropdown ở trang video (rỗng = theo ENV), hoặc mặc định qua `TTS_PROVIDER`. Provider abstraction: thêm provider mới = 1 file trong `lib/tts-providers/`. Cache đĩa dùng chung (preview synth 1 lần → CLI tái dùng); key ElevenLabs giữ nguyên công thức cũ nên **không đốt lại cache đã trả phí**.
+
+- **ElevenLabs** — trả phí theo ký tự, chất lượng cao. Voice ID tự do từ voice library.
+- **CapCut** — **miễn phí**, có sẵn giọng Việt (chọn trong dropdown catalog). ⚠️ **API nội bộ reverse-engineered, KHÔNG chính thức — có thể ngừng hoạt động bất cứ lúc nào.** Khi CapCut lỗi, hệ thống **không tự fallback** (tránh âm thầm đốt quota trả phí): báo lỗi rõ kèm gợi ý đổi `TTS_PROVIDER=elevenlabs` (đường lùi).
 
 | Biến | Ý nghĩa | Mặc định |
 |------|---------|----------|
-| `ELEVENLABS_API_KEY` | API key (bắt buộc khi synth audio) | — |
+| `TTS_PROVIDER` | Provider mặc định khi project không chọn riêng: `elevenlabs` \| `capcut` | `elevenlabs` |
+| `ELEVENLABS_API_KEY` | API key (bắt buộc khi synth bằng ElevenLabs) | — |
 | `ELEVENLABS_VOICE_ID` | Giọng đọc | `21m00Tcm4TlvDq8ikWAM` (Rachel) |
 | `ELEVENLABS_MODEL` | Cả 3 tier chọn qua ENV: `eleven_multilingual_v2` (chất lượng) / `eleven_turbo_v2_5` (rẻ ~50%) / `eleven_flash_v2_5` (nhanh, nháp) | `eleven_multilingual_v2` |
 | `ELEVENLABS_BASE_URL` | Endpoint — chỉ đổi khi test với mock | `https://api.elevenlabs.io` |
-| `TTS_CACHE_DIR` | Cache mp3 trên đĩa theo hash text+voice+model: preview synth 1 lần, CLI tái dùng, **không gọi API lần 2** | `.cache/tts` |
+| `CAPCUT_VOICE` | Giọng CapCut mặc định (khi project không chọn giọng) | `BV074_streaming` |
+| `CAPCUT_RESOURCE_ID` | resource_id mặc định (chỉ dùng khi `CAPCUT_VOICE` ngoài catalog gắn sẵn) | `7102355709945188865` |
+| `CAPCUT_DEVICE_JSON` | Path file JSON override device profile CapCut (tuỳ chọn) | — |
+| `CAPCUT_BASE_URL` | Endpoint CapCut — chỉ đổi khi test với mock | `https://editor-api-sg.capcutapi.com` |
+| `TTS_CACHE_DIR` | Cache mp3 trên đĩa theo hash provider+text+voice+model: preview synth 1 lần, CLI tái dùng, **không gọi API lần 2** | `.cache/tts` |
 | `SUBS_FONTS_DIR` | Thư mục font cho burn-in phụ đề (font Việt đủ dấu không nằm trong hệ thống) | — |
 
 **Ingest gộp + chia band (mọi upload)**
@@ -155,7 +165,7 @@ Có thể tạo storyboard **ngay từ phase xem trước** (chưa chạy Stage 
 | POST | `/api/jobs/{id}/storyboard/script/segments/split` | body `{segId, atShotIndex}` — tách tại biên shot |
 | POST | `/api/jobs/{id}/storyboard/script/segments/reorder` | body `{segId, to}` |
 | POST | `/api/jobs/{id}/storyboard/script/confirm` | chốt kịch bản (mọi mutator sau đó tự reset cờ) |
-| POST | `/api/jobs/{id}/storyboard/tts` | body `{segIds?, voiceId?, model?}` → synth từng đoạn (lỗi cô lập, cache đĩa) → `{results:[{segId, durationSec, audioUrl, cached}]}` |
+| POST | `/api/jobs/{id}/storyboard/tts` | body `{segIds?, provider?, voiceId?, model?}` → synth từng đoạn (lỗi cô lập, cache đĩa) → `{results:[{segId, durationSec, audioUrl, cached}]}` |
 | GET | `/api/jobs/{id}/storyboard/tts/{segId}/audio` | stream mp3 từ cache (preview "có audio") |
 | GET | `/api/jobs/{id}/storyboard/export-bundle` | bundle.zip (config qua `?config=<json>`) |
 | POST | `/api/jobs/{id}/storyboard/export-bundle` | multipart `config` + file `bgm` → bundle.zip kèm BGM + audio đã synth (audio stale theo narration bị loại) |
@@ -232,7 +242,8 @@ Item lỗi chưa retry: `"error": "…"` + `content: null`.
 
 **Stage 2 (kịch bản + video):**
 - `lib/script.ts` — biên kịch: `readScriptConfig` (ENV `SCRIPT_*`), vision fallback band thiếu content (lỗi cô lập), `generateScript` (model text → gộp/tách shotIndices, validate biên).
-- `lib/tts.ts` — ElevenLabs + **cache đĩa** (sha256 text+voice+model, ghi atomic `.tmp`→rename, metadata độ dài); text rỗng không synth.
+- `lib/tts.ts` — orchestration TTS: **cache đĩa** (sha256 [provider+]text+voice+model, ghi atomic `.tmp`→rename, metadata độ dài), resolve provider (arg > `TTS_PROVIDER` > elevenlabs), gọi `provider.synth`; text rỗng không synth.
+- `lib/tts-providers/` — provider abstraction: `types.ts` (interface), `catalog.ts` (data giọng client-safe), `elevenlabs.ts`, `capcut.ts` (port TS thuần `node:crypto`, không auto-fallback), `index.ts` (registry). Thêm provider mới = 1 file + 1 dòng registry.
 - `lib/bundle.ts` — đóng/mở bundle.zip (manifest + render-config + band + audio + bgm), validate version + band khớp shots.
 - `lib/timeline.ts` — **thuần, dùng chung UI+CLI**: `buildTimeline` (audio nhạc trưởng, sàn, phân bổ shot theo weight), `splitSentences`/`allocateCaptions`/`toSrt` (caption tách theo câu, canh giờ tỉ lệ ký tự), `toTimelineJson`.
 - `lib/kenburns.ts` — **thuần**: suy hướng pan/zoom từ region+aspect, blur-fill khi lệch tỉ lệ, kẹp vận tốc pan → chuỗi filtergraph ffmpeg.
@@ -255,10 +266,10 @@ Item lỗi chưa retry: `"error": "…"` + `content: null`.
 **Unit tests** (ingest, banding, narration, script/timeline/bundle/kenburns/tts-cache):
 ```bash
 npm run test:unit     # gồm cả verify-script (Stage 2) + verify-project (.mtvproj)
-npm run test:script   # riêng Stage 2 unit (mock model + mock ElevenLabs, không mạng thật)
+npm run test:script   # riêng Stage 2 unit (mock model + mock ElevenLabs + mock CapCut, không mạng thật)
 npm run test:project  # riêng round-trip + validate file project .mtvproj
 ```
-Kiểm tra downscale/bound, chia band theo gutter, xoá band/nhịp, narration compose; Stage 2: generateScript (validate biên shotIndices), buildTimeline (audio nhạc trưởng/sàn/weight), toSrt caption tách câu, bundle round-trip, kenburns pan/zoom/blur-fill, TTS cache MISS/HIT.
+Kiểm tra downscale/bound, chia band theo gutter, xoá band/nhịp, narration compose; Stage 2: generateScript (validate biên shotIndices), buildTimeline (audio nhạc trưởng/sàn/weight), toSrt caption tách câu, bundle round-trip, kenburns pan/zoom/blur-fill, TTS cache MISS/HIT (ElevenLabs + CapCut: flow new→poll→audio, key prefix provider, task fail/timeout kèm gợi ý đổi provider).
 
 **E2E render (Stage 2, mock ElevenLabs — cần ffmpeg, thiếu tự SKIP):**
 ```bash

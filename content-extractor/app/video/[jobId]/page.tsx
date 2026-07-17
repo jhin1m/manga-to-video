@@ -25,6 +25,11 @@ import { defaultRenderConfig } from '@/lib/schema';
 import { planKenburns } from '@/lib/kenburns';
 import { ASPECT_CSS, kenburnsFrameStyle } from '@/lib/kenburns-css';
 import { allocateCaptions, buildTimeline, splitSentences, TIMELINE_DEFAULTS } from '@/lib/timeline';
+import { TTS_PROVIDER_OPTIONS } from '@/lib/tts-providers/catalog';
+
+// Sentinel dropdown provider: Radix Select cấm value="" — dùng 'env' đại diện "Theo ENV",
+// map về '' khi lưu (rỗng = lấy TTS_PROVIDER lúc synth).
+const TTS_PROVIDER_ENV = 'env';
 
 // Preview UI video (Stage 2): phát duyệt kịch bản dạng video — Ken Burns XẤP XỈ bằng CSS,
 // phụ đề chỉnh live, BGM + khung hình. Hai chế độ: im lặng (durationHint, free) và có audio
@@ -197,6 +202,7 @@ export default function VideoPreviewPage() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            ...(config.tts.provider ? { provider: config.tts.provider } : {}),
             ...(config.tts.voiceId ? { voiceId: config.tts.voiceId } : {}),
             ...(config.tts.model ? { model: config.tts.model } : {}),
           }),
@@ -321,6 +327,9 @@ export default function VideoPreviewPage() {
     caption = caps.find((c) => timeSec >= c.start && timeSec < c.end)?.text ?? null;
   }
   const sub = config.subtitles;
+  // Provider có catalog giọng (CapCut) → render dropdown giọng + ẩn model; provider khác/rỗng
+  // → 2 ô text voiceId/model như cũ.
+  const capcutVoices = TTS_PROVIDER_OPTIONS.find((p) => p.id === config.tts.provider)?.voices;
 
   const set = <K extends keyof RenderConfig>(key: K, value: RenderConfig[K]) =>
     setConfig((c) => ({ ...c, [key]: value }));
@@ -611,27 +620,77 @@ export default function VideoPreviewPage() {
             </CardHeader>
             <CardContent className="space-y-3 px-4 text-xs text-muted-foreground">
               <label className="flex items-center justify-between gap-2">
-                Voice ID
-                <Input
-                  type="text"
-                  placeholder="(ENV mặc định)"
-                  value={config.tts.voiceId}
-                  onChange={(e) => set('tts', { ...config.tts, voiceId: e.target.value })}
-                  className="h-7 w-40 px-1.5 text-xs"
-                />
+                Provider
+                <Select
+                  value={config.tts.provider || TTS_PROVIDER_ENV}
+                  onValueChange={(v) =>
+                    // Đổi provider → reset voiceId/model: giọng của provider này không hợp lệ
+                    // với provider kia (vd BV074 gửi sang ElevenLabs sẽ lỗi). Rỗng = mặc định.
+                    set('tts', { provider: v === TTS_PROVIDER_ENV ? '' : v, voiceId: '', model: '' })
+                  }
+                >
+                  <SelectTrigger size="sm" className="w-40 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={TTS_PROVIDER_ENV}>Theo ENV</SelectItem>
+                    {TTS_PROVIDER_OPTIONS.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </label>
-              <label className="flex items-center justify-between gap-2">
-                Model
-                <Input
-                  type="text"
-                  placeholder="(ENV mặc định)"
-                  value={config.tts.model}
-                  onChange={(e) => set('tts', { ...config.tts, model: e.target.value })}
-                  className="h-7 w-40 px-1.5 text-xs"
-                />
-              </label>
+              {capcutVoices ? (
+                <label className="flex items-center justify-between gap-2">
+                  Giọng
+                  <Select
+                    value={config.tts.voiceId || TTS_PROVIDER_ENV}
+                    onValueChange={(v) =>
+                      set('tts', { ...config.tts, voiceId: v === TTS_PROVIDER_ENV ? '' : v })
+                    }
+                  >
+                    <SelectTrigger size="sm" className="w-40 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={TTS_PROVIDER_ENV}>Giọng mặc định</SelectItem>
+                      {capcutVoices.map((v) => (
+                        <SelectItem key={v.id} value={v.id}>
+                          {v.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+              ) : (
+                <>
+                  <label className="flex items-center justify-between gap-2">
+                    Voice ID
+                    <Input
+                      type="text"
+                      placeholder="(ENV mặc định)"
+                      value={config.tts.voiceId}
+                      onChange={(e) => set('tts', { ...config.tts, voiceId: e.target.value })}
+                      className="h-7 w-40 px-1.5 text-xs"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-2">
+                    Model
+                    <Input
+                      type="text"
+                      placeholder="(ENV mặc định)"
+                      value={config.tts.model}
+                      onChange={(e) => set('tts', { ...config.tts, model: e.target.value })}
+                      className="h-7 w-40 px-1.5 text-xs"
+                    />
+                  </label>
+                </>
+              )}
               <p>
-                Synth 1 lần là vào cache đĩa — CLI render tái dùng, không gọi ElevenLabs lại.
+                Synth 1 lần là vào cache đĩa — CLI render tái dùng, không gọi API lại.
+                {capcutVoices ? ' CapCut là API miễn phí không chính thức — có thể ngừng chạy.' : ''}
               </p>
             </CardContent>
           </Card>

@@ -2,6 +2,7 @@
 //   generateScript (mock model) · toScriptSegments biên · toScriptManifest shape/clone
 //   buildTimeline/allocateShots · splitSentences/toSrt (caption tách câu) · bundle round-trip
 //   kenburns (pan-v/pan-h/zoom/blur-fill) · TTS cache MISS/HIT (mock ElevenLabs, cần ffprobe)
+//   TTS CapCut (mock: flow new→poll→audio, cache HIT, key prefix, task fail, timeout)
 import { mkdtemp, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
@@ -25,8 +26,9 @@ import {
   toSrt,
   toTimelineJson,
 } from '../lib/timeline';
-import { synthSegment } from '../lib/tts';
+import { synthSegment, ttsCacheKey } from '../lib/tts';
 import { createMockElevenLabs } from './mock-elevenlabs.mjs';
+import { createMockCapcut, CAPCUT_FAIL_VOICE, CAPCUT_QUEUE_VOICE } from './mock-capcut.mjs';
 import { createMockScriptModel } from './mock-script-model.mjs';
 
 let failures = 0;
@@ -258,6 +260,87 @@ console.log('Test 8: TTS cache — MISS gọi API 1 lần, HIT không fetch (moc
     const r4 = await synthSegment('Xin chào Stage 2.', { ...cfg, voiceId: 'voice-khac' });
     eq([r4.cached, mock.requestCount()], [false, 2], 'đổi voice → key khác → MISS');
 
+    await rm(cacheDir, { recursive: true, force: true });
+    await mock.close();
+  }
+}
+
+console.log('Test 9: TTS CapCut — flow new→poll→audio, cache HIT, key prefix, fail, timeout (mock)');
+{
+  let hasFfmpeg = true;
+  try {
+    await assertFfmpeg();
+  } catch {
+    hasFfmpeg = false;
+    console.log('  ~ SKIP: thiếu ffmpeg/ffprobe — bỏ qua test CapCut (unit khác vẫn chạy)');
+  }
+  if (hasFfmpeg) {
+    const mock = await createMockCapcut();
+    const cacheDir = await mkdtemp(path.join(os.tmpdir(), 'capcut-cache-'));
+    process.env.CAPCUT_BASE_URL = `http://127.0.0.1:${mock.port}`;
+    process.env.CAPCUT_POLL_INTERVAL_MS = '10'; // poll nhanh cho test
+    process.env.CAPCUT_TIMEOUT_MS = '2000';
+    const cfg = {
+      provider: 'capcut',
+      apiKey: '',
+      baseUrl: '',
+      voiceId: 'BV074_streaming',
+      model: '',
+      cacheDir,
+    };
+
+    const r1 = await synthSegment('Xin chào CapCut.', cfg);
+    eq(r1.cached, false, 'lần 1: MISS');
+    eq(mock.newRequestCount(), 1, 'lần 1 tạo task đúng 1 lần');
+    ok(r1.durationSec > 0.8 && r1.durationSec < 1.3, `mp3 mock ~1s (${r1.durationSec.toFixed(2)})`);
+    ok(existsSync(r1.mp3Path), 'mp3 nằm trong cache đĩa');
+
+    const r2 = await synthSegment('Xin chào CapCut.', cfg);
+    eq([r2.cached, mock.newRequestCount()], [true, 1], 'lần 2: HIT, mock không tạo task mới');
+    eq(r2.mp3Path, r1.mp3Path, 'cùng key → cùng file');
+
+    const kc = ttsCacheKey('Xin chào CapCut.', 'BV074_streaming', '', 'capcut');
+    const ke = ttsCacheKey('Xin chào CapCut.', 'BV074_streaming', '', 'elevenlabs');
+    ok(kc !== ke, 'cache key capcut ≠ elevenlabs cùng text/voice/model (prefix provider)');
+    eq(r1.key, kc, 'synthSegment dùng đúng key capcut');
+
+    const r3 = await synthSegment('   ', cfg);
+    eq([r3.durationSec, mock.newRequestCount()], [0, 1], 'text rỗng → duration 0, không tạo task');
+
+    // H1: voiceId rỗng + đổi CAPCUT_VOICE (env) → key phản ánh giọng hiệu dụng, KHÔNG HIT nhầm.
+    const cfgEnvVoice = { ...cfg, voiceId: '' };
+    process.env.CAPCUT_VOICE = 'BV074_streaming';
+    const e1 = await synthSegment('Giọng mặc định env.', cfgEnvVoice);
+    const newAfterE1 = mock.newRequestCount();
+    process.env.CAPCUT_VOICE = 'BV075_streaming';
+    const e2 = await synthSegment('Giọng mặc định env.', cfgEnvVoice);
+    ok(e1.key !== e2.key, 'đổi CAPCUT_VOICE khi voiceId rỗng → key khác (không HIT nhầm giọng cũ)');
+    eq([e2.cached, mock.newRequestCount() > newAfterE1], [false, true], 'giọng env mới → MISS, tạo task mới');
+    delete process.env.CAPCUT_VOICE;
+
+    let failMsg = '';
+    try {
+      await synthSegment('Lỗi giọng.', { ...cfg, voiceId: CAPCUT_FAIL_VOICE });
+    } catch (err) {
+      failMsg = err instanceof Error ? err.message : String(err);
+    }
+    ok(failMsg.includes('TTS_PROVIDER=elevenlabs'), 'task fail → message gợi ý đổi elevenlabs');
+    ok(!/token/i.test(failMsg), 'message lỗi task fail không lộ token');
+
+    let toMsg = '';
+    try {
+      await synthSegment('Chờ mãi.', { ...cfg, voiceId: CAPCUT_QUEUE_VOICE });
+    } catch (err) {
+      toMsg = err instanceof Error ? err.message : String(err);
+    }
+    ok(
+      toMsg.includes('quá thời gian chờ') && toMsg.includes('TTS_PROVIDER=elevenlabs'),
+      'poll timeout → message gợi ý đổi elevenlabs',
+    );
+
+    delete process.env.CAPCUT_BASE_URL;
+    delete process.env.CAPCUT_POLL_INTERVAL_MS;
+    delete process.env.CAPCUT_TIMEOUT_MS;
     await rm(cacheDir, { recursive: true, force: true });
     await mock.close();
   }

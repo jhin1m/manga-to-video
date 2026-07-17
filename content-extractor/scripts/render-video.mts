@@ -130,6 +130,7 @@ async function main() {
         console.log(`[render] đoạn ${seg.order + 1}: audio bundle ${segDurations[seg.id].toFixed(2)}s`);
       } else {
         const ttsCfg = readTtsConfig({
+          provider: config.tts.provider || undefined,
           voiceId: config.tts.voiceId || undefined,
           model: config.tts.model || undefined,
         });

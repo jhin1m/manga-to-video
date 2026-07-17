@@ -20,11 +20,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   let segIds: string[] | undefined;
+  let provider: string | undefined;
   let voiceId: string | undefined;
   let model: string | undefined;
   try {
     const body = (await req.json().catch(() => ({}))) as {
       segIds?: unknown;
+      provider?: unknown;
       voiceId?: unknown;
       model?: unknown;
     };
@@ -34,6 +36,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       }
       segIds = body.segIds;
     }
+    if (typeof body.provider === 'string' && body.provider) provider = body.provider;
     if (typeof body.voiceId === 'string' && body.voiceId) voiceId = body.voiceId;
     if (typeof body.model === 'string' && body.model) model = body.model;
   } catch {
@@ -42,7 +45,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   let cfg;
   try {
-    cfg = readTtsConfig({ voiceId, model });
+    cfg = readTtsConfig({ provider, voiceId, model });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Cấu hình TTS không hợp lệ';
     return NextResponse.json({ error: message }, { status: 400 });
