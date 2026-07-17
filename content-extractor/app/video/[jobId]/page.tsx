@@ -308,6 +308,7 @@ export default function VideoPreviewPage() {
       imgW: working.width,
       imgH: working.height,
       region: currentShot.region,
+      motion: currentShot.motion,
       aspect: config.aspect,
       durationSec: shotDur,
       fps: config.fps,

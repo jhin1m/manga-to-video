@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import pLimit from 'p-limit';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
-import type { SceneContent, ScriptSegment } from './schema';
+import type { BeatRegion, MotionOverride, SceneContent, ScriptSegment } from './schema';
 import { estimateSeconds } from './schema';
 import { createPacer } from './pipeline';
 import { createCompletion, describeImage, extractJson, withRetry } from './vision';
@@ -42,6 +42,8 @@ export interface ScriptBeatInput {
   sourceIndex: number;
   beatId: string;
   content: SceneContent | null;
+  region: BeatRegion | null; // vùng người dùng vẽ ở Storyboard — copy 1 chiều sang Shot
+  motion?: MotionOverride; // ghi đè hiệu ứng của beat — copy 1 chiều, undefined = auto
 }
 
 const PROMPT_HEADER = `Bạn là biên kịch video recap truyện tranh. Dưới đây là nội dung từng khung hình theo thứ tự đọc (đánh số index từ 0). Nhiệm vụ:
@@ -154,11 +156,16 @@ export function toScriptSegments(
       id: crypto.randomUUID(),
       order: segments.length,
       narration: raw.narration,
-      shots: valid.map((idx) => ({
-        sourceIndex: inputs[idx].sourceIndex,
-        region: null,
-        weight: 1,
-      })),
+      shots: valid.map((idx) => {
+        const { sourceIndex, region, motion } = inputs[idx];
+        // Copy khối để Shot không chia sẻ object với Beat (sửa beat sau này không lây sang script)
+        return {
+          sourceIndex,
+          region: region ? { ...region } : null,
+          ...(motion !== undefined ? { motion: { ...motion } } : {}),
+          weight: 1,
+        };
+      }),
       sourceBeatIds: valid.map((idx) => inputs[idx].beatId),
       durationHint: estimateSeconds(raw.narration),
     });

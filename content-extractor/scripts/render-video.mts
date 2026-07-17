@@ -181,6 +181,7 @@ async function main() {
         imgW: dims.w,
         imgH: dims.h,
         region: shot.region,
+        motion: shot.motion,
         aspect: config.aspect,
         durationSec,
         fps: config.fps,

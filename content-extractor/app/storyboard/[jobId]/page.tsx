@@ -13,7 +13,13 @@ import { PageShell } from '@/components/page-shell';
 import { useProject } from '@/components/project-context';
 import { RegionCropper } from '@/components/region-cropper';
 import { cn } from '@/lib/utils';
-import type { BeatDTO, BeatRegion, JobProgress, StoryboardDTO } from '@/lib/schema';
+import type {
+  BeatDTO,
+  BeatRegion,
+  JobProgress,
+  MotionOverride,
+  StoryboardDTO,
+} from '@/lib/schema';
 
 // Trang storyboard master–detail: trái = list nhịp gọn (thumbnail + reorder), phải = chi
 // tiết nhịp đang chọn (chọn vùng kéo-thả + narration + Generate + xoá). Kịch bản AI ở
@@ -22,6 +28,7 @@ import type { BeatDTO, BeatRegion, JobProgress, StoryboardDTO } from '@/lib/sche
 interface BeatDraft {
   narration: string;
   region: BeatRegion | null;
+  motion?: MotionOverride; // undefined = auto
 }
 
 async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
@@ -63,6 +70,10 @@ export default function StoryboardPage() {
   const [rowBusy, setRowBusy] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [rev, setRev] = useState(0); // cache-buster cho crop preview sau khi region/beat đổi
+  // Kịch bản chỉ copy beat MỘT CHIỀU lúc generate — sửa nhịp sau đó không tự lan sang script.
+  // hasScript (probe lúc mount) + editedAfterScript (đã lưu thay đổi nào đó) → banner nhắc tạo lại.
+  const [hasScript, setHasScript] = useState(false);
+  const [editedAfterScript, setEditedAfterScript] = useState(false);
   const esRef = useRef<EventSource | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -143,6 +154,11 @@ export default function StoryboardPage() {
         if (first.progress.phase === 'queued' || first.progress.phase === 'processing') {
           attachStream();
         }
+        // Probe kịch bản (404 = chưa có) — chỉ để bật banner, lỗi mạng thì bỏ qua.
+        try {
+          const res = await fetch(`/api/jobs/${jobId}/storyboard/script`);
+          if (!cancelled) setHasScript(res.ok);
+        } catch {}
       } catch (err) {
         if (cancelled) return;
         setNotFound(true);
@@ -165,7 +181,7 @@ export default function StoryboardPage() {
   // nháp, hành vi master-detail tiêu chuẩn.
   if (selected && draftBeatId !== selected.id) {
     setDraftBeatId(selected.id);
-    setDraft({ narration: selected.narration, region: selected.region });
+    setDraft({ narration: selected.narration, region: selected.region, motion: selected.motion });
     setDraftTouched(false);
   }
   // Server cập nhật nhịp đang chọn (vd compose xong đổ narration về) mà người dùng CHƯA
@@ -176,9 +192,10 @@ export default function StoryboardPage() {
     !draftTouched &&
     draft &&
     (draft.narration !== selected.narration ||
-      JSON.stringify(draft.region) !== JSON.stringify(selected.region))
+      JSON.stringify(draft.region) !== JSON.stringify(selected.region) ||
+      JSON.stringify(draft.motion) !== JSON.stringify(selected.motion))
   ) {
-    setDraft({ narration: selected.narration, region: selected.region });
+    setDraft({ narration: selected.narration, region: selected.region, motion: selected.motion });
   }
   if (!selected && draftBeatId !== null) {
     setDraftBeatId(null);
@@ -211,12 +228,17 @@ export default function StoryboardPage() {
         {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ narration: draft.narration, region: draft.region }),
+          body: JSON.stringify({
+            narration: draft.narration,
+            region: draft.region,
+            motion: draft.motion ?? null, // null = auto (xoá ghi đè)
+          }),
         },
       );
       replaceBeat(updated);
-      setDraft({ narration: updated.narration, region: updated.region });
+      setDraft({ narration: updated.narration, region: updated.region, motion: updated.motion });
       setDraftTouched(false);
+      setEditedAfterScript(true);
       publish({ dirty: true });
       toast.success(`Đã lưu nhịp ${updated.order + 1}.`);
     } catch (err) {
@@ -236,9 +258,10 @@ export default function StoryboardPage() {
       );
       replaceBeat(updated);
       if (draftBeatId === beatId) {
-        setDraft({ narration: updated.narration, region: updated.region });
+        setDraft({ narration: updated.narration, region: updated.region, motion: updated.motion });
         setDraftTouched(false);
       }
+      setEditedAfterScript(true);
       publish({ dirty: true });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Generate thất bại');
@@ -259,6 +282,7 @@ export default function StoryboardPage() {
       setDto(next);
       setRev((r) => r + 1);
       setSelectedBeat(null); // về nhịp đầu danh sách mới
+      setEditedAfterScript(true);
       publishReadiness(next);
       publish({ dirty: true });
     } catch (err) {
@@ -279,6 +303,7 @@ export default function StoryboardPage() {
       });
       setDto(next);
       setRev((r) => r + 1);
+      setEditedAfterScript(true);
       publish({ dirty: true });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Thao tác thất bại');
@@ -343,7 +368,8 @@ export default function StoryboardPage() {
     selected !== null &&
     draft !== null &&
     (draft.narration !== selected.narration ||
-      JSON.stringify(draft.region) !== JSON.stringify(selected.region));
+      JSON.stringify(draft.region) !== JSON.stringify(selected.region) ||
+      JSON.stringify(draft.motion) !== JSON.stringify(selected.motion));
 
   return (
     <PageShell
@@ -375,6 +401,21 @@ export default function StoryboardPage() {
           />
         </CardContent>
       </Card>
+
+      {/* Kịch bản copy beat 1 chiều lúc generate — sửa nhịp xong phải tạo lại mới có hiệu lực */}
+      {hasScript && editedAfterScript && (
+        <div className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
+          Kịch bản hiện tại chưa ăn các thay đổi vừa lưu — mở trang{' '}
+          <button
+            type="button"
+            className="font-medium underline underline-offset-2"
+            onClick={() => router.push(`/script/${jobId}`)}
+          >
+            Kịch bản
+          </button>{' '}
+          và bấm Tạo kịch bản lại để vùng hình / lời đọc mới đi vào video.
+        </div>
+      )}
 
       {beats.length === 0 ? (
         <p className="mt-6 text-sm italic text-muted-foreground">
@@ -472,10 +513,15 @@ export default function StoryboardPage() {
                       width={selectedWorking.width}
                       height={selectedWorking.height}
                       region={draft.region}
+                      motion={draft.motion}
                       disabled={selectedBusy}
                       onChange={(region) => {
                         setDraftTouched(true);
                         setDraft((d) => (d ? { ...d, region } : d));
+                      }}
+                      onMotionChange={(motion) => {
+                        setDraftTouched(true);
+                        setDraft((d) => (d ? { ...d, motion: motion ?? undefined } : d));
                       }}
                       maxHeightClass={dto.sourceKind === 'strip' ? 'max-h-[55vh]' : 'max-h-[60vh]'}
                       contextRegions={beats
@@ -517,7 +563,11 @@ export default function StoryboardPage() {
                       variant="outline"
                       disabled={selectedBusy || !dirtyDraft}
                       onClick={() => {
-                        setDraft({ narration: selected.narration, region: selected.region });
+                        setDraft({
+                          narration: selected.narration,
+                          region: selected.region,
+                          motion: selected.motion,
+                        });
                         setDraftTouched(false);
                       }}
                     >

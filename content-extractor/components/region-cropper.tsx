@@ -1,16 +1,30 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { toast } from 'sonner';
+import { ArrowLeftRight, ChevronDown, Crop } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { useReducedMotion } from '@/components/use-reduced-motion';
 import { cn } from '@/lib/utils';
-import { defaultRenderConfig, type Aspect, type BeatRegion } from '@/lib/schema';
-import { planKenburns } from '@/lib/kenburns';
+import {
+  defaultRenderConfig,
+  type Aspect,
+  type BeatRegion,
+  type MotionMode,
+  type MotionOverride,
+} from '@/lib/schema';
+import { availableModes, planKenburns } from '@/lib/kenburns';
 import { ASPECT_CSS, kenburnsFrameStyle, kenburnsModeLabel } from '@/lib/kenburns-css';
+import { INK_BBOX_DEFAULTS, inkBBox } from '@/lib/ink-bbox';
 
 // Chọn vùng trực quan trên ảnh working: kéo để VẼ khung mới, kéo bên trong khung để DI
 // CHUYỂN, kéo tay cầm trên viền để CHỈNH KÍCH THƯỚC (neo cạnh/góc đối diện). Ảnh hiển thị
@@ -60,20 +74,37 @@ const PREVIEW_FPS = 30;
 const PREVIEW_MAX_EDGE = 800;
 const PREVIEW_DEFAULTS = defaultRenderConfig();
 
+// Nhãn mode trong dropdown (không kèm mũi tên hướng — hướng do nút đảo quyết định).
+const MODE_OPTIONS: Array<{ mode: MotionMode; label: string }> = [
+  { mode: 'auto', label: 'Auto' },
+  { mode: 'pan-v', label: 'Lia dọc' },
+  { mode: 'pan-h', label: 'Lia ngang' },
+  { mode: 'zoom', label: 'Zoom' },
+  { mode: 'static', label: 'Tĩnh' },
+];
+
 // Chiếu vùng đang chọn vào khung đúng tỉ lệ, chạy lặp đúng pan/zoom mà planKenburns sinh
 // cho hộp hiện tại — cùng cấu trúc player với trang video (nền blur-cover + fg transform).
+// Chip mode trên preview là DROPDOWN: chỗ đang báo hệ thống định làm gì cũng là chỗ bảo
+// nó làm khác (ghi đè per-nhịp); kèm nút đảo hướng khi mode hiện hành có hướng.
 function ShotPreview({
   imageUrl,
   width,
   height,
   region,
   aspect,
+  motion,
+  onMotionChange,
+  disabled = false,
 }: {
   imageUrl: string;
   width: number; // kích thước working thật (px)
   height: number;
   region: BeatRegion | null; // null = cả band
   aspect: Aspect;
+  motion?: MotionOverride; // undefined = auto
+  onMotionChange?: (motion: MotionOverride | null) => void; // null = trở về auto
+  disabled?: boolean;
 }) {
   const reducedMotion = useReducedMotion();
   const [p, setP] = useState(0);
@@ -137,12 +168,22 @@ function ShotPreview({
     durationSec: PREVIEW_DURATION_SEC,
     fps: PREVIEW_FPS,
     zoom: PREVIEW_DEFAULTS.kenburns.zoom,
+    motion,
   });
   const { fgStyle, imgTransformStyle } = kenburnsFrameStyle(
     plan,
     reducedMotion ? 0 : p,
     PREVIEW_DEFAULTS.kenburns.zoom,
   );
+
+  const isAuto = motion === undefined || motion.mode === 'auto';
+  const modes = availableModes(region, width, height, aspect);
+  const chipLabel = isAuto
+    ? `Auto · ${kenburnsModeLabel(plan.mode)}`
+    : kenburnsModeLabel(plan.mode, plan.reverse === true);
+  // Nút đảo hướng: chỉ khi mode hiện hành có hướng. Bấm khi đang auto = "đóng băng" mode
+  // suy ra thành ghi đè tường minh kèm reverse (auto + reverse là no-op theo hợp đồng).
+  const canReverse = plan.mode !== 'static' && onMotionChange !== undefined;
 
   return (
     <div
@@ -161,9 +202,72 @@ function ShotPreview({
           style={{ ...fgStyle, ...imgTransformStyle, margin: '0 auto' }}
         />
       </div>
-      <Badge className="absolute left-1.5 top-1.5 bg-black/60 text-white">
-        {kenburnsModeLabel(plan.mode)}
-      </Badge>
+      <div className="absolute left-1.5 top-1.5 flex items-center gap-1">
+        {onMotionChange ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild disabled={disabled}>
+              <button
+                type="button"
+                className="inline-flex cursor-pointer items-center gap-0.5 rounded-md bg-black/60 px-2 py-0.5 text-xs font-medium text-white disabled:cursor-default"
+                title="Chọn hiệu ứng cho nhịp này"
+              >
+                {chipLabel}
+                <ChevronDown className="size-3" aria-hidden />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              {MODE_OPTIONS.map(({ mode, label }) => {
+                const feasible = modes.includes(mode);
+                return (
+                  <DropdownMenuItem
+                    key={mode}
+                    // Không dùng prop disabled (pointer-events:none nuốt mất tooltip title)
+                    // — tự chặn onSelect + style mờ, title giải thích vì sao không chọn được.
+                    aria-disabled={!feasible}
+                    className={cn(!feasible && 'cursor-not-allowed opacity-50')}
+                    title={
+                      feasible
+                        ? undefined
+                        : mode === 'pan-h'
+                          ? 'Vùng đang chọn không đủ phần dư ngang để lia'
+                          : 'Vùng đang chọn không đủ phần dư dọc để lia'
+                    }
+                    onSelect={(e) => {
+                      if (!feasible) {
+                        e.preventDefault();
+                        return;
+                      }
+                      onMotionChange(mode === 'auto' ? null : { mode });
+                    }}
+                  >
+                    {(motion?.mode ?? 'auto') === mode ? '✓ ' : ''}
+                    {label}
+                  </DropdownMenuItem>
+                );
+              })}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          <Badge className="bg-black/60 text-white">{chipLabel}</Badge>
+        )}
+        {canReverse && (
+          <button
+            type="button"
+            disabled={disabled}
+            title="Đảo hướng chuyển động"
+            aria-label="Đảo hướng chuyển động"
+            className="inline-flex cursor-pointer items-center rounded-md bg-black/60 p-1 text-white disabled:cursor-default"
+            onClick={() =>
+              onMotionChange({
+                mode: plan.mode,
+                ...(plan.reverse === true ? {} : { reverse: true }),
+              })
+            }
+          >
+            <ArrowLeftRight className="size-3" aria-hidden />
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -174,6 +278,8 @@ export function RegionCropper({
   height,
   region,
   onChange,
+  motion,
+  onMotionChange,
   disabled = false,
   contextRegions = [],
   maxHeightClass = 'max-h-[60vh]',
@@ -184,6 +290,10 @@ export function RegionCropper({
   height: number;
   region: BeatRegion | null; // null = cả trang
   onChange: (region: BeatRegion | null) => void;
+  // Ghi đè hiệu ứng per-nhịp — undefined = auto; onMotionChange(null) = trở về auto.
+  // Không truyền onMotionChange → chip chỉ hiển thị (read-only) như trước.
+  motion?: MotionOverride;
+  onMotionChange?: (motion: MotionOverride | null) => void;
   disabled?: boolean;
   // Vùng của các nhịp khác (ngữ cảnh, chỉ hiển thị) — dùng cho canvas strip.
   contextRegions?: Array<{ label: string; region: BeatRegion }>;
@@ -319,6 +429,50 @@ export function RegionCropper({
     onChange(clampRegion({ ...base, [key]: n }, width, height));
   }
 
+  // "Vừa khít nội dung": co region bám vùng có mực của CẢ ảnh, bỏ lề trắng. Chỉ thủ công —
+  // auto-trim đã bị spike bác bỏ (tiết kiệm TB 7.3%, 2/27 band đạt ngưỡng). Tính bbox trên
+  // canvas hạ cỡ rồi SCALE NGƯỢC về px working — quên bước này là region sai toàn bộ;
+  // padding của inkBBox hấp thụ sai số vài px nên không cần canvas full-res.
+  function fitToContent() {
+    const img = imgRef.current;
+    if (!img || !img.complete || img.naturalWidth === 0) return;
+    const scale = Math.min(1, PREVIEW_MAX_EDGE / Math.max(width, height));
+    const cw = Math.max(1, Math.round(width * scale));
+    const ch = Math.max(1, Math.round(height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = cw;
+    canvas.height = ch;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(img, 0, 0, cw, ch);
+    let rgba: ImageData;
+    try {
+      rgba = ctx.getImageData(0, 0, cw, ch);
+    } catch {
+      // Canvas taint (ảnh cross-origin trong tương lai) — báo rõ thay vì nổ trong handler.
+      toast.error('Không đọc được pixel ảnh để tính vùng nội dung.');
+      return;
+    }
+    const bbox = inkBBox(
+      { data: rgba.data, width: cw, height: ch, channels: 4 },
+      // Sàn padding tính theo px CANVAS HẠ CỠ rồi mới scale ngược — co sàn theo scale để
+      // padding hiệu dụng trên ảnh working đúng ~padMinPx, không bị thổi phồng 1/scale lần.
+      { padMinPx: Math.max(2, Math.round(INK_BBOX_DEFAULTS.padMinPx * scale)) },
+    );
+    if (!bbox) {
+      toast.info('Ảnh full-bleed — không có lề trắng để cắt.');
+      return;
+    }
+    const inv = 1 / scale;
+    onChange(
+      clampRegion(
+        { x: bbox.x * inv, y: bbox.y * inv, w: bbox.w * inv, h: bbox.h * inv },
+        width,
+        height,
+      ),
+    );
+  }
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
@@ -326,6 +480,17 @@ export function RegionCropper({
           Kéo trên ảnh để chọn vùng · kéo trong khung để di chuyển · kéo tay cầm để chỉnh cỡ (
           {width}×{height}px)
         </p>
+        <Button
+          size="xs"
+          variant="outline"
+          className="shrink-0"
+          disabled={disabled}
+          title="Co vùng bám sát nội dung, bỏ lề trắng"
+          onClick={fitToContent}
+        >
+          <Crop data-icon="inline-start" />
+          Vừa khít nội dung
+        </Button>
         <label className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
           Cả trang
           <Switch
@@ -438,6 +603,9 @@ export function RegionCropper({
             height={height}
             region={shown}
             aspect={previewAspect}
+            motion={motion}
+            onMotionChange={onMotionChange}
+            disabled={disabled}
           />
           <p className="text-[10px] leading-snug text-muted-foreground/70">
             Xem trước xấp xỉ chuyển động — bản chuẩn do CLI render.

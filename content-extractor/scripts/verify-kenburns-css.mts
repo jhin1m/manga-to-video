@@ -85,10 +85,35 @@ const squareInput: KenburnsInput = {
 };
 eq(planKenburns(squareInput).mode, 'zoom', 'band vuông → plan zoom');
 
+console.log('verify-kenburns-css: reverse + static (motion override)');
+const panVRev = { mode: 'pan-v' as const, blurFill: false, travelPx: 500, basePx: 0, reverse: true };
+eq(
+  kenburnsFrameStyle(panVRev, 0.25, 1.12).imgTransformStyle.transform,
+  'translateY(calc((100cqh - 100%) * 0.7500))',
+  'pan-v reverse: tiến độ đảo 1→0 (p=0.25 → 0.75)',
+);
+eq(
+  kenburnsFrameStyle({ ...zoomPlan, reverse: true }, 0, 1.12).imgTransformStyle.transform,
+  'scale(1.1200)',
+  'zoom reverse p=0 bắt đầu từ zoom đích (zoom-out)',
+);
+eq(
+  kenburnsFrameStyle({ mode: 'static', blurFill: false }, 0.5, 1.12),
+  {
+    fgStyle: { width: '100%', height: '100%', objectFit: 'contain' },
+    imgTransformStyle: {},
+  },
+  'static: khung đứng yên, không transform',
+);
+
 console.log('verify-kenburns-css: kenburnsModeLabel');
 eq(kenburnsModeLabel('pan-v'), 'Lia dọc ↓', 'label pan-v');
 eq(kenburnsModeLabel('pan-h'), 'Lia ngang →', 'label pan-h');
 eq(kenburnsModeLabel('zoom'), 'Zoom vào ⊙', 'label zoom');
+eq(kenburnsModeLabel('pan-v', true), 'Lia dọc ↑', 'label pan-v reverse');
+eq(kenburnsModeLabel('pan-h', true), 'Lia ngang ←', 'label pan-h reverse');
+eq(kenburnsModeLabel('zoom', true), 'Zoom ra ⊙', 'label zoom reverse');
+eq(kenburnsModeLabel('static'), 'Tĩnh', 'label static');
 
 if (failures > 0) {
   console.error(`verify-kenburns-css: ${failures} FAILED`);

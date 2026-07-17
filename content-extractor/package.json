@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:unit": "tsx scripts/verify-ingest.mts && tsx scripts/verify-banding.mts && tsx scripts/verify-narration.mts && tsx scripts/verify-script.mts && tsx scripts/verify-project.mts && tsx scripts/verify-kenburns-css.mts",
+    "test:unit": "tsx scripts/verify-ingest.mts && tsx scripts/verify-banding.mts && tsx scripts/verify-narration.mts && tsx scripts/verify-script.mts && tsx scripts/verify-project.mts && tsx scripts/verify-kenburns-css.mts && tsx scripts/verify-ink-bbox.mts",
     "test:script": "tsx scripts/verify-script.mts",
     "test:project": "tsx scripts/verify-project.mts",
     "test:render": "tsx scripts/verify-render.mts",

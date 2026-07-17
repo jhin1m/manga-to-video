@@ -4,6 +4,7 @@ import type {
   BeatDTO,
   ItemStatus,
   JobProgress,
+  MotionOverride,
   SceneContent,
   ScriptDTO,
   ScriptSegment,
@@ -132,18 +133,24 @@ export function getBeat(jobId: string, beatId: string): StoredBeat | undefined {
   return store.get(jobId)?.beats.find((b) => b.id === beatId);
 }
 
-// Sửa tay từ UI: narration/region/order. Narration đổi → durationHint tính lại,
-// xoá cờ lỗi (người đã tự điền nội dung là chốt).
+// Sửa tay từ UI: narration/region/motion/order. Narration đổi → durationHint tính lại,
+// xoá cờ lỗi (người đã tự điền nội dung là chốt). motion null = trở về auto (xoá field).
 export function updateBeat(
   jobId: string,
   beatId: string,
-  patch: Partial<Pick<Beat, 'narration' | 'region' | 'order'>>,
+  patch: Partial<Pick<Beat, 'narration' | 'region' | 'order'>> & {
+    motion?: MotionOverride | null;
+  },
 ): StoredBeat | undefined {
   const state = store.get(jobId);
   const beat = state?.beats.find((b) => b.id === beatId);
   if (!state || !beat) return undefined;
   beat.rev += 1; // vô hiệu compose đang bay trên nội dung/vùng cũ
   if (patch.region !== undefined) beat.region = patch.region;
+  if (patch.motion !== undefined) {
+    if (patch.motion === null) delete beat.motion;
+    else beat.motion = patch.motion;
+  }
   if (patch.order !== undefined) beat.order = patch.order;
   if (patch.narration !== undefined) {
     beat.narration = patch.narration;
@@ -243,6 +250,7 @@ export function toBeat(sb: StoredBeat): Beat {
     order: sb.order,
     sourceIndex: sb.sourceIndex,
     region: sb.region,
+    ...(sb.motion !== undefined ? { motion: sb.motion } : {}),
     narration: sb.narration,
     ...(sb.sourceDialogue !== undefined ? { sourceDialogue: sb.sourceDialogue } : {}),
     ...(sb.durationHint !== undefined ? { durationHint: sb.durationHint } : {}),

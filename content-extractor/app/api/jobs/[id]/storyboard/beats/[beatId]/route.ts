@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import type { BeatRegion } from '@/lib/schema';
+import type { BeatRegion, MotionMode, MotionOverride } from '@/lib/schema';
 import {
   deleteBeat,
   getBeat,
@@ -15,7 +15,22 @@ export const runtime = 'nodejs';
 interface PatchBody {
   narration?: string;
   region?: BeatRegion | null;
+  motion?: MotionOverride | null; // null = trở về auto (xoá ghi đè)
   order?: number;
+}
+
+const MOTION_MODES: MotionMode[] = ['auto', 'pan-v', 'pan-h', 'zoom', 'static'];
+
+// null = xoá ghi đè; {mode:'auto'} chuẩn hoá về null (undefined = auto, giữ manifest sạch).
+// reverse chỉ giữ khi true — false đồng nghĩa vắng mặt.
+function parseMotion(raw: unknown): MotionOverride | null | 'invalid' {
+  if (raw === null) return null;
+  if (typeof raw !== 'object' || Array.isArray(raw)) return 'invalid';
+  const m = raw as Record<string, unknown>;
+  if (typeof m.mode !== 'string' || !MOTION_MODES.includes(m.mode as MotionMode)) return 'invalid';
+  if (m.reverse !== undefined && typeof m.reverse !== 'boolean') return 'invalid';
+  if (m.mode === 'auto') return null;
+  return { mode: m.mode as MotionMode, ...(m.reverse === true ? { reverse: true } : {}) };
 }
 
 function parseRegion(raw: unknown): BeatRegion | null | 'invalid' {
@@ -46,6 +61,11 @@ function parsePatchBody(raw: unknown): PatchBody | null {
     const region = parseRegion(body.region);
     if (region === 'invalid') return null;
     out.region = region;
+  }
+  if (body.motion !== undefined) {
+    const motion = parseMotion(body.motion);
+    if (motion === 'invalid') return null;
+    out.motion = motion;
   }
   if (body.order !== undefined) {
     if (typeof body.order !== 'number' || !Number.isInteger(body.order) || body.order < 0) {
@@ -83,7 +103,7 @@ export async function PATCH(
     return NextResponse.json(
       {
         error:
-          'Dữ liệu không hợp lệ: narration là chuỗi, region là null hoặc {x,y,w,h} số không âm, order là số nguyên ≥ 0',
+          'Dữ liệu không hợp lệ: narration là chuỗi, region là null hoặc {x,y,w,h} số không âm, motion là null hoặc {mode, reverse?}, order là số nguyên ≥ 0',
       },
       { status: 400 },
     );
@@ -107,7 +127,11 @@ export async function PATCH(
     }
   }
 
-  updateBeat(id, beatId, { narration: patch.narration, region: patch.region });
+  updateBeat(id, beatId, {
+    narration: patch.narration,
+    region: patch.region,
+    motion: patch.motion,
+  });
   if (patch.order !== undefined) {
     try {
       reorderBeat(id, beatId, patch.order);

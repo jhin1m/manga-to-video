@@ -57,6 +57,8 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
         sourceIndex: beat.sourceIndex,
         beatId: beat.id,
         content: (itemMatchesWorking ? item.content : null) ?? working?.content ?? null,
+        region: beat.region,
+        motion: beat.motion,
       };
     });
 

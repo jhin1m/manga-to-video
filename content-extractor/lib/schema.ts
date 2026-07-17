@@ -66,6 +66,16 @@ export interface BeatRegion {
 
 export type SourceKind = 'pages' | 'strip';
 
+// Ghi đè hiệu ứng camera per-nhịp/per-shot. `undefined` = 'auto' (planKenburns tự suy từ
+// hình dáng region) — KHÔNG đặt default {mode:'auto'} để Beat/Shot/.mtvproj cũ tự khớp
+// mà không cần migration.
+export type MotionMode = 'auto' | 'pan-v' | 'pan-h' | 'zoom' | 'static';
+
+export interface MotionOverride {
+  mode: MotionMode;
+  reverse?: boolean; // lia ↑ / lia ← / zoom-out — VÔ NGHĨA (no-op im lặng) với 'static' và 'auto'
+}
+
 // Một nhịp của storyboard: lời đọc + vùng hình. Hợp đồng cho Stage 2 (TTS + Ken Burns).
 // Manifest region-only: hướng pan/zoom do Stage 2 tự suy từ region.
 export interface Beat {
@@ -73,6 +83,7 @@ export interface Beat {
   order: number;
   sourceIndex: number; // trỏ working image (canvas stitch với strip / trang với pages)
   region: BeatRegion | null; // null = cả trang
+  motion?: MotionOverride; // ghi đè hiệu ứng — undefined = auto
   narration: string; // lời đọc cuối — template pre-fill, người biên tập sửa tay
   sourceDialogue?: string[]; // truy vết thoại gốc đã ghép vào narration
   durationHint?: number; // giây, ước lượng từ độ dài narration
@@ -150,6 +161,7 @@ export function toStoryboardManifest(s: {
         order: b.order,
         sourceIndex: b.sourceIndex,
         region: b.region ? { ...b.region } : null,
+        ...(b.motion !== undefined ? { motion: { ...b.motion } } : {}),
         narration: b.narration,
         ...(b.sourceDialogue !== undefined ? { sourceDialogue: [...b.sourceDialogue] } : {}),
         ...(b.durationHint !== undefined ? { durationHint: b.durationHint } : {}),
@@ -165,6 +177,7 @@ export function toStoryboardManifest(s: {
 export interface Shot {
   sourceIndex: number;
   region: BeatRegion | null;
+  motion?: MotionOverride; // ghi đè hiệu ứng — undefined = auto (copy 1 chiều từ Beat lúc generate)
   weight: number;
 }
 
@@ -209,6 +222,7 @@ export function toScriptManifest(s: {
         shots: seg.shots.map((sh) => ({
           sourceIndex: sh.sourceIndex,
           region: sh.region ? { ...sh.region } : null,
+          ...(sh.motion !== undefined ? { motion: { ...sh.motion } } : {}),
           weight: sh.weight,
         })),
         ...(seg.sourceBeatIds !== undefined ? { sourceBeatIds: [...seg.sourceBeatIds] } : {}),

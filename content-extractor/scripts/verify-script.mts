@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { readBundle, writeBundle } from '../lib/bundle';
 import { assertFfmpeg } from '../lib/ffmpeg';
-import { frameSize, kenburns, planKenburns } from '../lib/kenburns';
+import { availableModes, frameSize, kenburns, planKenburns } from '../lib/kenburns';
 import type { ScriptSegment } from '../lib/schema';
 import {
   defaultRenderConfig,
@@ -51,13 +51,17 @@ function seg(init: Partial<ScriptSegment> & { id: string; order: number }): Scri
   } as ScriptSegment;
 }
 
-console.log('Test 1: toScriptSegments — validate biên shotIndices');
+console.log('Test 1: toScriptSegments — validate biên shotIndices + region beat → shot');
 {
+  const regions = [null, { x: 5, y: 10, w: 100, h: 80 }, null];
+  const motions = [undefined, { mode: 'static' as const }, undefined];
   const inputs = [0, 1, 2].map((i) => ({
     order: i,
     sourceIndex: i,
     beatId: `beat-${i}`,
     content: null,
+    region: regions[i],
+    motion: motions[i],
   }));
   const segments = toScriptSegments(
     [
@@ -71,7 +75,19 @@ console.log('Test 1: toScriptSegments — validate biên shotIndices');
   eq(segments[0].shots.map((s) => s.sourceIndex), [0, 1], 'gộp: đoạn 1 phủ band 0+1');
   eq(segments[0].sourceBeatIds, ['beat-0', 'beat-1'], 'sourceBeatIds truy vết');
   eq(segments.map((s) => s.order), [0, 1], 'order tăng dần liền mạch');
-  ok(segments[0].shots.every((s) => s.region === null && s.weight === 1), 'shot mặc định region null, weight 1');
+  eq(
+    segments[0].shots.map((s) => s.region),
+    [null, { x: 5, y: 10, w: 100, h: 80 }],
+    'region beat truyền vào shot (null giữ null, vùng vẽ giữ vùng vẽ)',
+  );
+  ok(segments[0].shots[1].region !== regions[1], 'region được clone — sửa beat sau này không lây sang shot');
+  eq(
+    segments[0].shots.map((s) => s.motion),
+    [undefined, { mode: 'static' }],
+    'motion beat truyền vào shot (undefined giữ vắng mặt)',
+  );
+  ok(segments[0].shots[1].motion !== motions[1], 'motion được clone — không rò tham chiếu beat');
+  ok(segments[0].shots.every((s) => s.weight === 1), 'weight mặc định 1');
 }
 
 console.log('Test 2: generateScript qua mock model (fence ```json + index ngoài biên)');
@@ -85,6 +101,7 @@ console.log('Test 2: generateScript qua mock model (fence ```json + index ngoài
     sourceIndex: i,
     beatId: `beat-${i}`,
     content: { description: `Cảnh ${i}.`, dialogue: [], note: '' },
+    region: null,
   }));
   const segments = await generateScript(inputs);
   eq(segments.length, 2, 'mock 3 đoạn → 2 (đoạn index 99 bị loại)');
@@ -98,7 +115,17 @@ console.log('Test 2: generateScript qua mock model (fence ```json + index ngoài
 console.log('Test 3: toScriptManifest — shape + clone');
 {
   const source = [
-    seg({ id: 'b', order: 1, narration: 'Hai.', shots: [{ sourceIndex: 1, region: { x: 0, y: 0, w: 10, h: 10 }, weight: 2 }] }),
+    seg({
+      id: 'b',
+      order: 1,
+      narration: 'Hai.',
+      shots: [{
+        sourceIndex: 1,
+        region: { x: 0, y: 0, w: 10, h: 10 },
+        motion: { mode: 'pan-v', reverse: true },
+        weight: 2,
+      }],
+    }),
     seg({ id: 'a', order: 0, narration: 'Một.' }),
   ];
   const manifest = toScriptManifest({ jobId: 'j1', createdAt: 'now', segments: source });
@@ -109,6 +136,14 @@ console.log('Test 3: toScriptManifest — shape + clone');
   manifest.segments[1].shots[0].weight = 999;
   eq(source[0].shots[0].region!.x, 0, 'region được clone (không rò tham chiếu)');
   eq(source[0].shots[0].weight, 2, 'shots được clone');
+  eq(
+    manifest.segments[1].shots[0].motion,
+    { mode: 'pan-v', reverse: true },
+    'motion sống sót qua toScriptManifest (map tường minh — chỗ dễ rớt im lặng nhất)',
+  );
+  manifest.segments[1].shots[0].motion!.mode = 'zoom';
+  eq(source[0].shots[0].motion!.mode, 'pan-v', 'motion được clone (không rò tham chiếu)');
+  eq(manifest.segments[0].shots[0].motion, undefined, 'shot không motion → manifest không thêm field');
 }
 
 console.log('Test 4: buildTimeline — audio nhạc trưởng, sàn, phân bổ weight');
@@ -221,6 +256,71 @@ console.log('Test 7: kenburns — hướng theo region + aspect, blur-fill');
   // Kẹp vận tốc pan: shot cực ngắn → quãng chạy bị giảm, không pan giật.
   const fast = planKenburns({ ...base, durationSec: 0.5, aspect: '9:16' as const });
   ok((fast.travelPx ?? 0) <= Math.round(0.35 * 1920 * 0.5), 'quãng pan bị kẹp theo vận tốc tối đa');
+}
+
+console.log('Test 7b: motion override — auto byte-identical, ép mode, reverse, static');
+{
+  const base = { imgW: 600, imgH: 2400, region: null, durationSec: 3, fps: 30, zoom: 1.12 };
+  // GATE HỒI QUY QUAN TRỌNG NHẤT: motion undefined phải ra CHUỖI Y HỆT bản trước khi có
+  // motion override — literal đóng đinh, đổi là vỡ mọi video cũ.
+  const auto916 = kenburns({ ...base, aspect: '9:16' });
+  eq(
+    auto916,
+    `[0:v]crop=600:2400:0:0,scale=1080:-2,crop=1080:1920:0:'192+2016*(t/3.000)',setsar=1[v]`,
+    'auto byte-identical (literal đóng đinh trước plan motion)',
+  );
+  eq(
+    kenburns({ ...base, aspect: '9:16' as const, motion: { mode: 'auto' as const } }),
+    auto916,
+    "{mode:'auto'} ≡ motion undefined",
+  );
+  eq(
+    kenburns({ ...base, aspect: '9:16' as const, motion: { mode: 'auto' as const, reverse: true } }),
+    auto916,
+    'auto + reverse = no-op im lặng (hợp đồng)',
+  );
+  eq(
+    kenburns({ ...base, aspect: '9:16' as const, motion: { mode: 'pan-v' as const, reverse: true } }),
+    auto916.replace('(t/', '(1-t/'),
+    'pan-v reverse: chỉ đảo frac (t/dur) → (1-t/dur), còn lại y hệt',
+  );
+  eq(
+    kenburns({ ...base, aspect: '9:16' as const, motion: { mode: 'pan-h' as const } }),
+    auto916,
+    'ép pan-h bất khả thi (band dọc, coverH < 1.05) → rơi về suy luận auto',
+  );
+  const st = kenburns({
+    ...base, imgW: 600, imgH: 600, aspect: '1:1' as const, motion: { mode: 'static' as const },
+  });
+  eq(st, '[0:v]crop=600:600:0:0,scale=1080:1080,setsar=1[v]', 'static khớp khung: scale thẳng, KHÔNG zoompan');
+  const stBlur = kenburns({ ...base, aspect: '16:9' as const, motion: { mode: 'static' as const } });
+  ok(
+    stBlur.includes('boxblur') && !stBlur.includes('zoompan'),
+    'static lệch tỉ lệ → blur-fill, fg tĩnh không zoompan/supersample',
+  );
+  const zr = kenburns({
+    ...base, imgW: 600, imgH: 600, aspect: '1:1' as const,
+    motion: { mode: 'zoom' as const, reverse: true },
+  });
+  ok(zr.includes(`z='1.1200-0.1200*on/`), 'zoom reverse dạng đóng Z-(Z-1)*on/(frames-1)');
+  // Ép pan bỏ trần PAN_MAX_COVER: band cực cao (cover > 3) auto từ chối pan, ép thì vẫn pan.
+  const veryTall = { ...base, imgW: 400, imgH: 4000, aspect: '9:16' as const };
+  eq(planKenburns(veryTall).mode, 'zoom', 'đối chứng: auto từ chối pan khi cover > 3');
+  eq(
+    planKenburns({ ...veryTall, motion: { mode: 'pan-v' as const } }).mode,
+    'pan-v',
+    'ép pan-v bỏ trần cover 3× — tôn trọng lựa chọn người dùng',
+  );
+  eq(
+    availableModes(null, 600, 2400, '9:16'),
+    ['auto', 'pan-v', 'zoom', 'static'],
+    'availableModes band dọc 9:16: có pan-v, không pan-h',
+  );
+  eq(
+    availableModes(null, 600, 600, '1:1'),
+    ['auto', 'zoom', 'static'],
+    'availableModes vuông 1:1: pan nào cũng bất khả thi',
+  );
 }
 
 console.log('Test 8: TTS cache — MISS gọi API 1 lần, HIT không fetch (mock ElevenLabs)');

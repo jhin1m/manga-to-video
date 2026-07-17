@@ -1,4 +1,4 @@
-import type { BeatRegion, RenderConfig, ScriptSegment } from './schema';
+import type { BeatRegion, MotionOverride, RenderConfig, ScriptSegment } from './schema';
 import { estimateSeconds } from './schema';
 
 // Timeline thuần (không import Node) — dùng chung cho CLI render (P5/P6) và Preview UI (P4).
@@ -8,6 +8,7 @@ import { estimateSeconds } from './schema';
 export interface TimelineShot {
   sourceIndex: number;
   region: BeatRegion | null;
+  motion?: MotionOverride; // ghi đè hiệu ứng từ Shot — undefined = auto
   start: number;
   end: number;
 }
@@ -107,6 +108,7 @@ export function buildTimeline(
       shots.push({
         sourceIndex: shot.sourceIndex,
         region: shot.region ? { ...shot.region } : null,
+        ...(shot.motion !== undefined ? { motion: { ...shot.motion } } : {}),
         start: round3(shotCursor),
         end: round3(end),
       });

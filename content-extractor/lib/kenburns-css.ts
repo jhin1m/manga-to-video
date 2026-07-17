@@ -23,20 +23,30 @@ export function kenburnsFrameStyle(
   p: number,
   zoom: number,
 ): KenburnsFrameStyle {
+  // reverse đọc từ plan (cùng nguồn với ffmpeg): tiến độ đảo 1→0 cho pan lẫn zoom
+  // (Z-(Z-1)p ≡ 1+(Z-1)(1-p)).
+  const q = plan.reverse ? 1 - p : p;
   if (plan.mode === 'pan-v') {
     // Ảnh phủ bề rộng khung; chạy dọc từ đầu tới cuối phần dư.
     return {
       fgStyle: { width: '100%', height: 'auto' },
-      imgTransformStyle: { transform: `translateY(calc((100cqh - 100%) * ${p.toFixed(4)}))` },
+      imgTransformStyle: { transform: `translateY(calc((100cqh - 100%) * ${q.toFixed(4)}))` },
     };
   }
   if (plan.mode === 'pan-h') {
     return {
       fgStyle: { height: '100%', width: 'auto', maxWidth: 'none' },
-      imgTransformStyle: { transform: `translateX(calc((100cqw - 100%) * ${p.toFixed(4)}))` },
+      imgTransformStyle: { transform: `translateX(calc((100cqw - 100%) * ${q.toFixed(4)}))` },
     };
   }
-  const scale = 1 + (Math.max(1, zoom) - 1) * p;
+  if (plan.mode === 'static') {
+    // Khung đứng yên — fit-inside như zoom nhưng không transform.
+    return {
+      fgStyle: { width: '100%', height: '100%', objectFit: 'contain' },
+      imgTransformStyle: {},
+    };
+  }
+  const scale = 1 + (Math.max(1, zoom) - 1) * q;
   return {
     fgStyle: { width: '100%', height: '100%', objectFit: 'contain' },
     imgTransformStyle: { transform: `scale(${scale.toFixed(4)})` },
@@ -49,13 +59,15 @@ export function kenburnsFrameFromInput(input: KenburnsInput, p: number): Kenburn
 }
 
 // Nhãn chuyển động tiếng Việt kèm hướng — hiển thị chip trên preview.
-export function kenburnsModeLabel(mode: KenburnsPlan['mode']): string {
+export function kenburnsModeLabel(mode: KenburnsPlan['mode'], reverse = false): string {
   switch (mode) {
     case 'pan-v':
-      return 'Lia dọc ↓';
+      return reverse ? 'Lia dọc ↑' : 'Lia dọc ↓';
     case 'pan-h':
-      return 'Lia ngang →';
+      return reverse ? 'Lia ngang ←' : 'Lia ngang →';
     case 'zoom':
-      return 'Zoom vào ⊙';
+      return reverse ? 'Zoom ra ⊙' : 'Zoom vào ⊙';
+    case 'static':
+      return 'Tĩnh';
   }
 }

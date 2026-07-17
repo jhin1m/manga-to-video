@@ -94,7 +94,8 @@ Hai provider chọn được. Chọn **per-project** bằng dropdown ở trang v
 1. Tạo storyboard qua nút **"Tạo storyboard"** (trang chính) hoặc trực tiếp `/api/jobs/{id}/storyboard` → **mỗi band = 1 nhịp**, region `null` (trọn band), narration pre-fill từ content Stage 1 (template thuần, không gọi vision).
 2. Trang `/storyboard/{jobId}` bố cục **master–detail**: cột trái = danh sách nhịp gọn (thumbnail + reorder ▲▼), cột phải = chi tiết nhịp đang chọn.
 3. Biên tập nhịp (panel chi tiết):
-   - **Region**: **kéo khung trên ảnh** để chọn vùng, kéo trong khung để di chuyển; toggle "Cả trang"; khối "Nâng cao" giữ numeric x/y/w/h (đồng bộ 2 chiều, chỉnh bằng bàn phím).
+   - **Region**: **kéo khung trên ảnh** để chọn vùng, kéo trong khung để di chuyển; toggle "Cả trang"; nút **"Vừa khít nội dung"** co region bám vùng có mực (bỏ lề trắng, chỉ thủ công); khối "Nâng cao" giữ numeric x/y/w/h (đồng bộ 2 chiều, chỉnh bằng bàn phím). Region đi thẳng vào khung hình video khi tạo kịch bản.
+   - **Hiệu ứng (Ken Burns)**: chip trên ô preview là **dropdown chọn mode** per-nhịp (Auto · Lia dọc · Lia ngang · Zoom · Tĩnh) + nút **đảo hướng** (lia ↑/←, zoom-out). Mặc định Auto tự suy từ hình dáng vùng; mode bất khả thi với vùng đang chọn bị mờ kèm tooltip. Sửa nhịp khi đã có kịch bản → banner nhắc **tạo lại kịch bản** để thay đổi đi vào video.
    - **Narration** (lời đọc): sửa tay, durationHint tự cập nhật theo độ dài.
    - **Generate ✨**: gọi vision cho riêng nhịp đó (crop vùng nhịp → mô tả + thoại) — dùng khi chưa chạy Stage 1, khi band lỗi, hoặc muốn soạn lại từ ảnh.
    - **Xoá**: bỏ hẳn một nhịp khỏi storyboard (re-order phần còn lại; chỉ khi không đang compose).
@@ -138,7 +139,7 @@ Có thể tạo storyboard **ngay từ phase xem trước** (chưa chạy Stage 
 | POST | `/api/jobs/{id}/storyboard` | không body → tạo storyboard từ job (1 band = 1 nhịp, narration từ content Stage 1). Trả về `{jobId, createdAt, sourceKind, progress, working, beats}` ở phase `queued` |
 | GET | `/api/jobs/{id}/storyboard` | trạng thái + beat hiện tại |
 | GET | `/api/jobs/{id}/storyboard/stream` | SSE tiến độ compose |
-| PATCH | `/api/jobs/{id}/storyboard/beats/{beatId}` | sửa beat `{narration?, region?, order?}` (region chuẩn: x/y ≥ 0, w/h ≥ 1, trong biên ảnh nguồn) |
+| PATCH | `/api/jobs/{id}/storyboard/beats/{beatId}` | sửa beat `{narration?, region?, motion?, order?}` (region chuẩn: x/y ≥ 0, w/h ≥ 1, trong biên ảnh nguồn; motion `null` = auto hoặc `{mode: 'pan-v'\|'pan-h'\|'zoom'\|'static', reverse?}`) |
 | DELETE | `/api/jobs/{id}/storyboard/beats/{beatId}` | xoá nhịp (re-order phần còn lại). `404` beat/storyboard không có, `409` khi đang compose |
 | POST | `/api/jobs/{id}/storyboard/beats/{beatId}/generate` | **Generate bằng vision**: crop vùng nhịp → mô tả + thoại → narration (lỗi cô lập vào beat) |
 | POST | `/api/jobs/{id}/storyboard/beats/{beatId}/retry` | compose lại từ content Stage 1 (không gọi vision) |
