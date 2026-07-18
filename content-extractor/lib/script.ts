@@ -55,7 +55,8 @@ Trả về DUY NHẤT một JSON thô (không markdown, không lời dẫn) đú
 {"segments":[{"narration": string, "shotIndices": [int, ...]}]}
 — shotIndices là các index khung mà đoạn kể phủ, xếp theo thứ tự đọc.`;
 
-function buildPrompt(inputs: ScriptBeatInput[]): string {
+// Export cho verify-script: khối context phải vào prompt, rỗng = prompt y cũ.
+export function buildPrompt(inputs: ScriptBeatInput[], context?: string): string {
   const lines = inputs.map((inp, index) => {
     const desc = inp.content?.description?.trim() || '(không có mô tả)';
     const dialogue = inp.content?.dialogue?.length
@@ -63,7 +64,13 @@ function buildPrompt(inputs: ScriptBeatInput[]): string {
       : '';
     return `[${index}] ${desc}${dialogue}`;
   });
-  return `${PROMPT_HEADER}\n\nNội dung các khung:\n${lines.join('\n')}`;
+  // Cùng khối ngữ cảnh với vision (một nguồn từ Job) — xưng hô trong LỜI KỂ chốt ở tầng
+  // biên kịch nên phải nhắc lại ở đây, không thể trông vào mô tả từng khung.
+  const trimmed = context?.trim();
+  const contextBlock = trimmed
+    ? `\n\nNgữ cảnh chương (nhân vật, xưng hô, bối cảnh — dùng để gọi tên và xưng hô nhất quán trong lời kể; không bịa thêm sự kiện ngoài các khung):\n${trimmed}`
+    : '';
+  return `${PROMPT_HEADER}${contextBlock}\n\nNội dung các khung:\n${lines.join('\n')}`;
 }
 
 // Vision fallback (Validation S1): band content null → crop cả band → describeImage.
@@ -72,7 +79,7 @@ function buildPrompt(inputs: ScriptBeatInput[]): string {
 export async function resolveMissingContent(
   jobId: string,
   inputs: ScriptBeatInput[],
-  opts?: { concurrency?: number; minIntervalMs?: number },
+  opts?: { concurrency?: number; minIntervalMs?: number; context?: string },
 ): Promise<ScriptBeatInput[]> {
   const missing = inputs.filter((inp) => !inp.content);
   if (missing.length === 0) return inputs;
@@ -94,7 +101,10 @@ export async function resolveMissingContent(
             w: working.width,
             h: working.height,
           });
-          resolved.set(inp.beatId, await describeImage(cropped, `script-band#${inp.order}`));
+          resolved.set(
+            inp.beatId,
+            await describeImage(cropped, `script-band#${inp.order}`, opts?.context),
+          );
         } catch (err) {
           console.error(`[script] vision fallback band#${inp.order} lỗi:`, err);
         }
@@ -181,7 +191,10 @@ export function toScriptSegments(
 
 // Gọi model text viết kịch bản cả chương. Throw khi model/parse hỏng hoàn toàn
 // (route trả lỗi rõ); lỗi từng band đã được cô lập ở resolveMissingContent.
-export async function generateScript(inputs: ScriptBeatInput[]): Promise<ScriptSegment[]> {
+export async function generateScript(
+  inputs: ScriptBeatInput[],
+  context?: string,
+): Promise<ScriptSegment[]> {
   if (inputs.length === 0) return [];
   const config = readScriptConfig();
   const client = new OpenAI({
@@ -190,7 +203,7 @@ export async function generateScript(inputs: ScriptBeatInput[]): Promise<ScriptS
     maxRetries: 0, // tự quản lý retry bằng withRetry
   });
   const messages: ChatCompletionMessageParam[] = [
-    { role: 'user', content: buildPrompt(inputs) },
+    { role: 'user', content: buildPrompt(inputs, context) },
   ];
   const res = await withRetry(() =>
     createCompletion(client, config.model, messages, config.disableThinking),

@@ -64,8 +64,9 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
 
   setScriptGenerating(id, true);
   try {
-    const resolved = await resolveMissingContent(id, inputs);
-    const segments = await generateScript(resolved);
+    const context = job?.context;
+    const resolved = await resolveMissingContent(id, inputs, { context });
+    const segments = await generateScript(resolved, context);
     if (segments.length === 0) {
       return NextResponse.json(
         { error: 'Model không trả về đoạn kịch bản hợp lệ nào — thử tạo lại' },

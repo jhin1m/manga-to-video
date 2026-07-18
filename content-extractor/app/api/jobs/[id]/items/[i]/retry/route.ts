@@ -20,7 +20,7 @@ export async function POST(
   }
 
   try {
-    const content = await describeImage(item.buffer, item.filename);
+    const content = await describeImage(item.buffer, item.filename, job.context);
     setItemResult(id, index, content); // đồng thời khớp lại progress.done + emit
   } catch (err) {
     setItemError(id, index, classifyError(err));

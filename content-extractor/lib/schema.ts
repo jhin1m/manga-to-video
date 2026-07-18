@@ -31,6 +31,8 @@ export interface JobStatusDTO {
   jobId: string;
   progress: JobProgress;
   items: ItemDTO[];
+  // Ngữ cảnh chương (nhân vật/xưng hô/bối cảnh) — tiêm vào mọi call vision + prompt biên kịch.
+  context: string;
 }
 
 export interface ManifestItem {
@@ -331,6 +333,8 @@ export interface ProjectFile {
   items: ProjectItemMeta[];
   scriptConfirmed?: boolean;
   audio?: Record<string, ProjectAudioMeta>; // segId → meta
+  // Ngữ cảnh chương người dùng nhập — optional để .mtvproj cũ mở được không cần migration.
+  context?: string;
 }
 
 // Nhận shape cấu trúc tối thiểu (Job nội bộ thỏa mãn về mặt structural typing)

@@ -21,6 +21,9 @@ export interface Job {
   createdAt: string;
   items: StoredItem[];
   progress: JobProgress;
+  // Ngữ cảnh chương người dùng nhập (nhân vật/xưng hô/bối cảnh) — nguồn duy nhất cho mọi
+  // đường gọi vision (batch, retry, generate beat, script fallback) + prompt biên kịch.
+  context: string;
 }
 
 // Singleton trên globalThis — sống sót qua HMR của dev server.
@@ -37,10 +40,12 @@ const bus: EventEmitter = (g.__mrs_bus ??= (() => {
 
 export function createJob(
   items: Array<{ filename: string; buffer: Buffer; mime: string; width: number; height: number }>,
+  context = '',
 ): Job {
   const job: Job = {
     id: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
+    context,
     items: items.map((it, index) => ({
       index,
       filename: it.filename,
@@ -59,6 +64,12 @@ export function createJob(
 
 export function getJob(id: string): Job | undefined {
   return store.get(id);
+}
+
+export function setJobContext(id: string, context: string): void {
+  const job = store.get(id);
+  if (!job) return;
+  job.context = context;
 }
 
 export function updateProgress(id: string, patch: Partial<JobProgress>): void {
@@ -133,5 +144,6 @@ export function toJobStatusDTO(job: Job): JobStatusDTO {
     jobId: job.id,
     progress: job.progress,
     items: job.items.map((it) => toItemDTO(job.id, it)),
+    context: job.context,
   };
 }

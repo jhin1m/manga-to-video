@@ -71,6 +71,9 @@ export function readProject(zipBuffer: Buffer): ProjectData {
   if (project.sourceKind !== 'pages' && project.sourceKind !== 'strip') {
     throw new Error("Project: sourceKind phải là 'pages' hoặc 'strip'");
   }
+  if (project.context !== undefined && typeof project.context !== 'string') {
+    throw new Error('Project: context phải là chuỗi');
+  }
   assertSafeName(project.jobId, 'Project: jobId');
 
   const manifest = parseEntryJson<Manifest>(zip, 'manifest.json', 'Project');

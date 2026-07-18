@@ -17,7 +17,8 @@ import {
   SCRIPT_VERSION,
   toScriptManifest,
 } from '../lib/schema';
-import { generateScript, toScriptSegments } from '../lib/script';
+import { buildPrompt, generateScript, toScriptSegments } from '../lib/script';
+import { buildVisionPrompt } from '../lib/vision';
 import {
   allocateCaptions,
   allocateShots,
@@ -88,6 +89,37 @@ console.log('Test 1: toScriptSegments — validate biên shotIndices + region be
   );
   ok(segments[0].shots[1].motion !== motions[1], 'motion được clone — không rò tham chiếu beat');
   ok(segments[0].shots.every((s) => s.weight === 1), 'weight mặc định 1');
+}
+
+console.log('Test 1b: khối ngữ cảnh chương trong prompt (vision + biên kịch)');
+{
+  const inputs = [
+    {
+      order: 0,
+      sourceIndex: 0,
+      beatId: 'b0',
+      content: { description: 'Cảnh mở đầu.', dialogue: [], note: '' },
+      region: null,
+    },
+  ];
+  const plain = buildPrompt(inputs);
+  ok(!plain.includes('Ngữ cảnh chương'), 'biên kịch: không context → prompt y cũ');
+  const withCtx = buildPrompt(inputs, '  Lâm Phong — nam chính.  ');
+  ok(
+    withCtx.includes('Ngữ cảnh chương') && withCtx.includes('Lâm Phong — nam chính.'),
+    'biên kịch: context được chèn (đã trim)',
+  );
+  ok(
+    withCtx.indexOf('Ngữ cảnh chương') < withCtx.indexOf('Nội dung các khung:'),
+    'biên kịch: khối context đứng trước danh sách khung',
+  );
+  eq(buildVisionPrompt(), buildVisionPrompt(''), 'vision: undefined và rỗng cho cùng prompt gốc');
+  ok(!buildVisionPrompt('   ').includes('Ngữ cảnh chương'), 'vision: context toàn khoảng trắng → prompt gốc');
+  const vp = buildVisionPrompt('Tô Nhược — nữ.');
+  ok(
+    vp.includes('Tô Nhược — nữ.') && vp.includes('KHÔNG mô tả'),
+    'vision: context kèm guardrail chống context-bleed',
+  );
 }
 
 console.log('Test 2: generateScript qua mock model (fence ```json + index ngoài biên)');

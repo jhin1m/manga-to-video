@@ -57,6 +57,7 @@ export async function POST(req: Request) {
         height: meta.height,
       };
     }),
+    project.context ?? '', // .mtvproj cũ không có field → job context rỗng như trước
   );
   let processed = 0;
   for (const m of manifest.items) {

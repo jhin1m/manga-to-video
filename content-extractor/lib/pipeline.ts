@@ -167,7 +167,7 @@ export async function processChapter(
         await pace(); // giãn nhịp trước khi gọi — vẫn nằm dưới trần concurrency của p-limit
         updateProgress(jobId, { currentIndex: item.index });
         try {
-          const content = await describeImage(item.buffer, item.filename);
+          const content = await describeImage(item.buffer, item.filename, job.context);
           setItemResult(jobId, item.index, content);
         } catch (err) {
           setItemError(jobId, item.index, classifyError(err));

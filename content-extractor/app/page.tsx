@@ -68,6 +68,8 @@ export default function Home() {
   const [drafts, setDrafts] = useState<Record<number, Draft>>({});
   const [rowBusy, setRowBusy] = useState<Set<number>>(new Set());
   const [rpm, setRpm] = useState(30); // nhịp vision (req/phút) — chỉnh trước khi Chạy để tránh 429
+  const [context, setContext] = useState(''); // ngữ cảnh chương — tiêm vào vision + biên kịch
+  const savedContext = useRef(''); // bản đã PATCH lên server — chỉ gửi lại khi có thay đổi
   const [sbBusy, setSbBusy] = useState(false);
   const esRef = useRef<EventSource | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -191,6 +193,8 @@ export default function Home() {
       setJobId(dto.jobId);
       setItems(dto.items); // thumbnail xem trước, đúng thứ tự đọc
       setProgress(dto.progress); // phase 'ready'
+      setContext(dto.context);
+      savedContext.current = dto.context;
       publish({ jobId: dto.jobId, dirty: true });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Không tạo được job');
@@ -199,11 +203,31 @@ export default function Home() {
     }
   }
 
+  // Lưu ngữ cảnh chương lên job (chỉ khi thay đổi). Gọi ở onBlur + ngay trước Chạy/Tạo
+  // storyboard. Trả false khi lưu hỏng để caller CHẶN hành động — không được chạy vision
+  // với context cũ/rỗng trong khi người dùng tưởng bản vừa nhập đã ăn.
+  async function saveContext(id: string): Promise<boolean> {
+    if (context === savedContext.current) return true;
+    try {
+      const dto = await fetchJSON<JobStatusDTO>(`/api/jobs/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ context }),
+      });
+      savedContext.current = dto.context;
+      return true;
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Không lưu được ngữ cảnh chương');
+      return false;
+    }
+  }
+
   // Bước 2: kích hoạt vision cho toàn bộ trang (rate limit theo rpm) rồi theo dõi qua SSE.
   async function handleRun() {
     if (!jobId) return;
     setBusy(true);
     try {
+      if (!(await saveContext(jobId))) return; // toast đã hiện — không chạy với context cũ
       const dto = await fetchJSON<JobStatusDTO>(`/api/jobs/${jobId}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -302,6 +326,11 @@ export default function Home() {
     if (!jobId) return;
     setSbBusy(true);
     try {
+      // Generate/kịch bản phía sau đều đọc context từ job — lưu hỏng thì dừng tại đây.
+      if (!(await saveContext(jobId))) {
+        setSbBusy(false);
+        return;
+      }
       await fetchJSON<StoryboardDTO>(`/api/jobs/${jobId}/storyboard`, { method: 'POST' });
       publish({ hasStoryboard: true, dirty: true });
       router.push(`/storyboard/${jobId}`);
@@ -319,6 +348,8 @@ export default function Home() {
     setProgress(null);
     setItems([]);
     setDrafts({});
+    setContext('');
+    savedContext.current = '';
     reset();
   }
 
@@ -434,6 +465,21 @@ export default function Home() {
                   Chapter mới
                 </Button>
               </div>
+            </CardContent>
+            <CardContent className="px-4">
+              <label className="block text-xs font-medium text-muted-foreground">
+                Nhân vật &amp; bối cảnh chương (tuỳ chọn — giúp gọi đúng tên nhân vật và xưng hô
+                khi dịch thoại, dùng cho cả trích xuất lẫn kịch bản)
+                <Textarea
+                  value={context}
+                  onChange={(e) => setContext(e.target.value)}
+                  onBlur={() => void saveContext(jobId)}
+                  rows={3}
+                  maxLength={4000}
+                  placeholder="Ví dụ: Lâm Phong — nam chính, đệ tử ngoại môn. Tô Nhược — nữ, sư tỷ của Lâm Phong. Bối cảnh: tông môn tu tiên."
+                  className="mt-1"
+                />
+              </label>
             </CardContent>
           </Card>
 

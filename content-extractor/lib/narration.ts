@@ -71,7 +71,7 @@ export async function composeBeat(
     if (opts?.vision || state.sourceKind === 'strip') {
       const band = beat.region ?? { x: 0, y: 0, w: working.width, h: working.height };
       const cropped = await cropRegion(working, band);
-      scene = await describeImage(cropped, `beat#${beat.order}`);
+      scene = await describeImage(cropped, `beat#${beat.order}`, getJob(jobId)?.context);
     } else {
       const freshContent = getJob(jobId)?.items[beat.sourceIndex]?.content;
       scene = freshContent ?? working.content ?? null;

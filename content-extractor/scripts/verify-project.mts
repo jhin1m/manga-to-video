@@ -81,6 +81,7 @@ function pagesFixture(): ProjectData {
     ],
     scriptConfirmed: true,
     audio: { 'seg-a': { key: 'cafe0123', durationSec: 3.2, text: 'Đoạn kể.' } },
+    context: 'Lâm Phong — nam chính, đệ tử ngoại môn.',
   };
   return {
     project,
@@ -107,6 +108,7 @@ console.log('Test 1: round-trip pages (script + confirmed + audio)');
   eq(back.project.version, PROJECT_VERSION, 'project version');
   eq(back.project.sourceKind, 'pages', 'sourceKind');
   eq(back.project.scriptConfirmed, true, 'cờ confirmed sống qua round-trip');
+  eq(back.project.context, 'Lâm Phong — nam chính, đệ tử ngoại môn.', 'context chương sống qua round-trip');
   eq(back.storyboard.beats, data.storyboard.beats, 'beats khớp nguyên vẹn (id/region/narration)');
   eq(back.script?.segments, data.script?.segments, 'script segments khớp');
   eq(back.project.audio, data.project.audio, 'audio meta (key/durationSec/text) khớp');
@@ -166,6 +168,7 @@ console.log('Test 2: round-trip strip (không script/audio) + bất biến khôn
   eq(back.script, undefined, 'không script.json → script undefined');
   eq(back.audio, undefined, 'không audio → undefined');
   eq(back.project.working[0], { sourceIndex: 0, width: 800, height: 2400 }, 'meta canvas strip giữ nguyên');
+  eq(back.project.context, undefined, 'file không có context (bản cũ) → undefined, mở bình thường');
 }
 
 console.log('Test 3: validate từ chối input hỏng');
@@ -188,6 +191,10 @@ console.log('Test 3: validate từ chối input hỏng');
     ),
   };
   throws(() => readProject(writeProject(oob)), 'vượt biên', 'region vượt biên → từ chối');
+
+  const badCtx = pagesFixture();
+  badCtx.project = { ...badCtx.project, context: 123 as unknown as string };
+  throws(() => readProject(writeProject(badCtx)), 'context phải là chuỗi', 'context sai kiểu → từ chối');
 
   const traversalJob = pagesFixture();
   traversalJob.project = { ...traversalJob.project, jobId: '../../etc' };

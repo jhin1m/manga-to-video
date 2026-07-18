@@ -45,6 +45,18 @@ Quy tắc — MỌI giá trị đều bằng tiếng Việt:
 - "dialogue": lời thoại trong các khung/bong bóng thoại, DỊCH sang tiếng Việt (ngôn ngữ gốc có thể là Nhật/Hàn/Anh/Trung), xếp theo đúng thứ tự đọc. Để mảng rỗng [] nếu trang không có thoại.
 - "note": để chuỗi rỗng "" trừ khi thật sự có điều đáng lưu ý: hiệu ứng âm thanh/từ tượng thanh nổi bật, chuyển cảnh, chi tiết nền quan trọng cho mạch truyện, hoặc cảnh báo ảnh mờ/chữ khó đọc (độ tin cậy thấp).`;
 
+// Ghép ngữ cảnh chương (nhân vật/xưng hô/bối cảnh, người dùng nhập) vào prompt vision.
+// Guardrail bắt buộc: ngữ cảnh chỉ để gọi tên + chọn xưng hô khi dịch thoại — nếu không
+// chặn, model "nhìn thấy" cả nhân vật không có trong ảnh (context bleed). Rỗng = prompt y cũ.
+export function buildVisionPrompt(context?: string): string {
+  const trimmed = context?.trim();
+  if (!trimmed) return PROMPT;
+  return `${PROMPT}
+
+Ngữ cảnh chương (người dùng cung cấp — CHỈ dùng để gọi đúng tên nhân vật và chọn đúng đại từ xưng hô khi dịch thoại; KHÔNG mô tả nhân vật/sự kiện không xuất hiện trong ảnh, KHÔNG chép ngữ cảnh này vào description):
+${trimmed}`;
+}
+
 // Cờ adaptive process-wide: thử response_format json_object; nếu endpoint trả 400 thì
 // tắt vĩnh viễn cho tiến trình này và gọi lại không kèm response_format.
 let jsonModeSupported = true;
@@ -162,7 +174,11 @@ async function boundForVision(buffer: Buffer, maxEdge: number): Promise<Buffer> 
     .toBuffer();
 }
 
-export async function describeImage(buffer: Buffer, filename?: string): Promise<SceneContent> {
+export async function describeImage(
+  buffer: Buffer,
+  filename?: string,
+  context?: string,
+): Promise<SceneContent> {
   const config = readVisionConfig();
   const client = new OpenAI({
     apiKey: config.apiKey,
@@ -175,7 +191,7 @@ export async function describeImage(buffer: Buffer, filename?: string): Promise<
     {
       role: 'user',
       content: [
-        { type: 'text', text: PROMPT },
+        { type: 'text', text: buildVisionPrompt(context) },
         { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b64}` } },
       ],
     },

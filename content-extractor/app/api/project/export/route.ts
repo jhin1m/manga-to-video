@@ -74,6 +74,7 @@ export async function GET(req: Request) {
     })),
     ...(hasScript ? { scriptConfirmed: state.scriptConfirmed === true } : {}),
     ...(audio.size > 0 ? { audio: audioMeta } : {}),
+    ...(job.context ? { context: job.context } : {}),
   };
 
   const zip = writeProject({
