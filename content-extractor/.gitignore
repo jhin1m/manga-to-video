@@ -34,6 +34,9 @@ yarn-error.log*
 .env*
 !.env.example
 
+# cấu hình AI lưu từ Settings dialog (per-machine, không chứa key)
+.settings.json
+
 # vercel
 .vercel
 

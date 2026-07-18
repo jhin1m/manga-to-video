@@ -22,6 +22,14 @@ npm run dev                  # http://localhost:3000
 
 ## Cấu hình (ENV — đổi nhà cung cấp không cần sửa code)
 
+> **Đổi nhanh từ UI:** nút **AI** (⚙️) trên header mở Settings dialog — chọn provider
+> (OpenAI / Z.AI / OpenRouter / Custom) + vision model + script model, lưu vào
+> `.settings.json` (gitignored, không chứa key) và **ưu tiên hơn ENV**, hiệu lực ngay không
+> cần restart. Key vẫn khai trong `.env.local` theo provider: `OPENAI_API_KEY`,
+> `ZAI_API_KEY`, `OPENROUTER_API_KEY` (thiếu key riêng → fallback `OPENAI_API_KEY`).
+> Nút "Dùng theo ENV" trong dialog xóa `.settings.json` → quay về cấu hình ENV dưới đây.
+> Test/e2e đặt `SETTINGS_FILE=/dev/null` để chạy ENV thuần.
+
 **Vision LLM (Stage 1)**
 
 | Biến | Ý nghĩa | Mặc định |

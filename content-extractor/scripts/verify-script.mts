@@ -30,7 +30,12 @@ import {
 import { synthSegment, ttsCacheKey } from '../lib/tts';
 import { createMockElevenLabs } from './mock-elevenlabs.mjs';
 import { createMockCapcut, CAPCUT_FAIL_VOICE, CAPCUT_QUEUE_VOICE } from './mock-capcut.mjs';
+
 import { createMockScriptModel } from './mock-script-model.mjs';
+
+// Test phải chạy ENV thuần (mock qua SCRIPT_BASE_URL) — không ăn .settings.json dev đã lưu
+// từ Settings dialog, nếu không settings sẽ đè mock endpoint và test gọi nhầm API thật.
+process.env.SETTINGS_FILE ??= '/dev/null';
 
 let failures = 0;
 const eq = (a: unknown, e: unknown, label: string) => {

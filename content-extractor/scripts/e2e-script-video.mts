@@ -6,7 +6,9 @@
 //   4. npm run build && PORT=3105 OPENAI_API_KEY=mock-key OPENAI_BASE_URL=http://localhost:3106/v1 \
 //      VISION_MODEL=mock-vision SCRIPT_API_KEY=mock-key SCRIPT_BASE_URL=http://localhost:3108/v1 \
 //      SCRIPT_MODEL=mock-script ELEVENLABS_API_KEY=mock-key ELEVENLABS_BASE_URL=http://localhost:3107 \
-//      TTS_CACHE_DIR=/tmp/e2e-tts-cache SPLIT_HEIGHT=1000 npx next start -p 3105
+//      TTS_CACHE_DIR=/tmp/e2e-tts-cache SPLIT_HEIGHT=1000 \
+//      SETTINGS_FILE=/dev/null npx next start -p 3105
+//      (SETTINGS_FILE=/dev/null: không ăn .settings.json của dev — e2e phải chạy ENV thuần)
 //   5. npx tsx scripts/e2e-script-video.mts
 // Phủ: tạo kịch bản (mock model, index ngoài biên bị loại) → sửa/gộp/tách/reorder/xoá →
 // confirm (mutator reset cờ) → TTS synth + stream audio → export-bundle mở lại được.

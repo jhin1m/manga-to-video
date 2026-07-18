@@ -2,7 +2,9 @@
 // Cách chạy (Node 24):
 //   1. node scripts/mock-openai-vision.mjs                      # mock vision :3106
 //   2. PORT=3105 OPENAI_API_KEY=mock-key OPENAI_BASE_URL=http://localhost:3106/v1 \
-//      VISION_MODEL=mock-vision VISION_RPM=600 SPLIT_HEIGHT=1000 npm run dev
+//      VISION_MODEL=mock-vision VISION_RPM=600 SPLIT_HEIGHT=1000 \
+//      SETTINGS_FILE=/dev/null npm run dev
+//      (SETTINGS_FILE=/dev/null: không ăn .settings.json của dev — e2e phải chạy ENV thuần)
 //   3. npx tsx scripts/e2e-storyboard.mts                       # (E2E_BASE đổi được)
 // Phủ: upload gộp ảnh dài + chia band + cô lập lỗi Stage 1 + storyboard 1 beat/band +
 // sửa tay + Generate (vision) + reorder + lưu project .mtvproj; smart-split né bubble

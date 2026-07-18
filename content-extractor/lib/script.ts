@@ -5,6 +5,7 @@ import type { BeatRegion, MotionOverride, SceneContent, ScriptSegment } from './
 import { estimateSeconds } from './schema';
 import { createPacer } from './pipeline';
 import { createCompletion, describeImage, extractJson, withRetry } from './vision';
+import { isZaiProvider, readAiSettings, resolveApiKey } from './settings';
 import { cropRegion } from './narration';
 import { getStoryboard } from './storyboard-store';
 
@@ -21,6 +22,25 @@ export interface ScriptConfig {
 }
 
 export function readScriptConfig(): ScriptConfig {
+  // Có settings từ UI → settings áp cho CẢ biên kịch (một provider cho cả hai stage),
+  // bỏ qua cặp SCRIPT_API_KEY/SCRIPT_BASE_URL vì key phải khớp provider đã chọn.
+  // Nút "Dùng theo ENV" trong Settings xóa file → quay lại nhánh ENV thuần bên dưới.
+  const settings = readAiSettings();
+  if (settings) {
+    const { apiKey, keyEnv } = resolveApiKey(settings.provider);
+    if (!apiKey) {
+      throw new Error(
+        `Thiếu ${keyEnv} (hoặc OPENAI_API_KEY) trong .env.local cho provider "${settings.provider}" đã chọn ở Settings.`,
+      );
+    }
+    return {
+      apiKey,
+      baseURL: settings.baseURL,
+      model: settings.scriptModel || process.env.SCRIPT_MODEL || 'gpt-4o',
+      disableThinking: isZaiProvider(settings.provider) && settings.disableThinking,
+    };
+  }
+
   const apiKey = process.env.SCRIPT_API_KEY || process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error(

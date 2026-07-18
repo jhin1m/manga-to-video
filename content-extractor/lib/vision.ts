@@ -6,6 +6,7 @@ import type {
   ChatCompletionMessageParam,
 } from 'openai/resources/chat/completions';
 import type { SceneContent } from './schema';
+import { isZaiProvider, readAiSettings, resolveApiKey } from './settings';
 
 export interface VisionConfig {
   apiKey: string;
@@ -18,21 +19,44 @@ export interface VisionConfig {
 }
 
 export function readVisionConfig(): VisionConfig {
+  const maxEdge = Number.parseInt(process.env.MAX_EDGE ?? '', 10);
+  const concurrency = Number.parseInt(process.env.VISION_CONCURRENCY ?? '', 10);
+  const rpm = Number.parseInt(process.env.VISION_RPM ?? '', 10);
+  const tuning = {
+    maxEdge: Number.isFinite(maxEdge) && maxEdge > 0 ? maxEdge : 1568,
+    concurrency: Number.isFinite(concurrency) && concurrency > 0 ? concurrency : 4,
+    rpm: Number.isFinite(rpm) && rpm > 0 ? rpm : 30,
+  };
+
+  // Có settings từ UI → settings quyết định provider/model/thinking; key vẫn lấy từ ENV
+  // theo provider. Cờ disableThinking chỉ áp cho z.ai — provider khác không nhận param GLM.
+  const settings = readAiSettings();
+  if (settings) {
+    const { apiKey, keyEnv } = resolveApiKey(settings.provider);
+    if (!apiKey) {
+      throw new Error(
+        `Thiếu ${keyEnv} (hoặc OPENAI_API_KEY) trong .env.local cho provider "${settings.provider}" đã chọn ở Settings.`,
+      );
+    }
+    return {
+      apiKey,
+      baseURL: settings.baseURL,
+      model: settings.visionModel || process.env.VISION_MODEL || 'gpt-4o-mini',
+      disableThinking: isZaiProvider(settings.provider) && settings.disableThinking,
+      ...tuning,
+    };
+  }
+
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error('Thiếu OPENAI_API_KEY — khai báo trong .env.local (xem .env.example).');
   }
-  const maxEdge = Number.parseInt(process.env.MAX_EDGE ?? '', 10);
-  const concurrency = Number.parseInt(process.env.VISION_CONCURRENCY ?? '', 10);
-  const rpm = Number.parseInt(process.env.VISION_RPM ?? '', 10);
   return {
     apiKey,
     baseURL: process.env.OPENAI_BASE_URL || undefined,
     model: process.env.VISION_MODEL || 'gpt-4o-mini',
-    maxEdge: Number.isFinite(maxEdge) && maxEdge > 0 ? maxEdge : 1568,
-    concurrency: Number.isFinite(concurrency) && concurrency > 0 ? concurrency : 4,
     disableThinking: /^(true|1|yes)$/i.test(process.env.VISION_DISABLE_THINKING ?? ''),
-    rpm: Number.isFinite(rpm) && rpm > 0 ? rpm : 30,
+    ...tuning,
   };
 }
 
