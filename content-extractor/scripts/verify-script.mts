@@ -304,7 +304,7 @@ console.log('Test 7: kenburns — hướng theo region + aspect, blur-fill');
   const base = { imgW: 600, imgH: 2400, region: null, durationSec: 3, fps: 30, zoom: 1.12 };
   const tall916 = planKenburns({ ...base, aspect: '9:16' as const });
   eq(tall916.mode, 'pan-v', 'band dọc + 9:16 → pan dọc');
-  ok(kenburns({ ...base, aspect: '9:16' }).includes('crop=1080:1920:0:'), 'filter pan-v crop theo t');
+  ok(kenburns({ ...base, aspect: '9:16' }).includes('crop=1080:7680:0:'), 'filter pan-v crop theo t ở 4× dọc trục');
   const tall169 = planKenburns({ ...base, aspect: '16:9' as const });
   eq([tall169.mode, tall169.blurFill], ['zoom', true], 'band dọc + 16:9 → zoom + blur-fill (Validation S1)');
   ok(kenburns({ ...base, aspect: '16:9' }).includes('boxblur'), 'filter 16:9 có blur-fill nền');
@@ -323,13 +323,14 @@ console.log('Test 7: kenburns — hướng theo region + aspect, blur-fill');
 console.log('Test 7b: motion override — auto byte-identical, ép mode, reverse, static');
 {
   const base = { imgW: 600, imgH: 2400, region: null, durationSec: 3, fps: 30, zoom: 1.12 };
-  // GATE HỒI QUY QUAN TRỌNG NHẤT: motion undefined phải ra CHUỖI Y HỆT bản trước khi có
-  // motion override — literal đóng đinh, đổi là vỡ mọi video cũ.
+  // GATE HỒI QUY QUAN TRỌNG NHẤT: motion undefined phải ra CHUỖI ĐÚNG LITERAL đóng đinh —
+  // chỉ được đổi khi CHỦ Ý đổi công thức render (supersample 4× chống shake lượng tử hoá
+  // integer của crop/zoompan), không được trôi tình cờ.
   const auto916 = kenburns({ ...base, aspect: '9:16' });
   eq(
     auto916,
-    `[0:v]crop=600:2400:0:0,scale=1080:-2,crop=1080:1920:0:'192+2016*(t/3.000)',setsar=1[v]`,
-    'auto byte-identical (literal đóng đinh trước plan motion)',
+    `[0:v]crop=600:2400:0:0,scale=1080:17280,crop=1080:7680:0:'768+8064*(t/3.000)',scale=1080:1920,setsar=1[v]`,
+    'auto byte-identical (literal đóng đinh, bản supersample 4×)',
   );
   eq(
     kenburns({ ...base, aspect: '9:16' as const, motion: { mode: 'auto' as const } }),

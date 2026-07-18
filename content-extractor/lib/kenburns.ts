@@ -4,7 +4,14 @@ import type { Aspect, BeatRegion, MotionMode, MotionOverride } from './schema';
 // Mặc định (auto) suy hướng chuyển động từ hình dáng region: cao/hẹp → pan dọc, rộng →
 // pan ngang, gần vuông → zoom vào tâm. `motion` ghi đè per-shot: ép mode + đảo hướng.
 // Aspect lệch band-ratio → blur-fill (nền scale-cover + boxblur, lớp trên fit-inside).
-// Pan dùng crop theo t (mượt, không jitter như zoompan).
+//
+// Chống shake: crop lẫn zoompan đều lượng tử hoá toạ độ về integer pixel MỖI FRAME, mà
+// chuyển động Ken Burns < 1px/frame → thành "đứng yên vài frame rồi giật ~1px" (preview
+// CSS dùng transform số thực nên mượt — chỉ bản render bị). Sai số giảm tuyến tính theo
+// hệ số supersample (đo thực nghiệm ×2→×4: giật 0.88px→0.43px), nên mọi nhánh có chuyển
+// động đều dựng ở SUPERSAMPLE× rồi downscale về khung; riêng zoom thêm tmix 2 frame
+// (motion < 0.5px/frame nên không ghost) triệt phần dư còn 0.14px. Pan KHÔNG tmix —
+// motion ~9px/frame sẽ thành bóng ma thấy rõ.
 
 export interface KenburnsInput {
   imgW: number;
@@ -48,6 +55,9 @@ const PAN_MAX_COVER = 3;
 // Kẹp vận tốc pan: quãng chạy ≤ 35% chiều khung hình mỗi giây (chống pan giật khi band
 // quá cao mà shot ngắn).
 const MAX_PAN_FRAME_PER_SEC = 0.35;
+// Hệ số supersample chống lượng tử hoá integer của crop/zoompan (xem header). Pan chỉ
+// nhân theo trục pan (trục kia không có toạ độ động); zoom nhân cả hai chiều fg.
+const SUPERSAMPLE = 4;
 
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
 
@@ -172,20 +182,25 @@ export function kenburns(input: KenburnsInput): string {
   // (gate hồi quy: motion undefined → filtergraph byte-identical).
   const frac = plan.reverse ? `(1-t/${dur.toFixed(3)})` : `(t/${dur.toFixed(3)})`;
 
+  // Pan chạy ở SUPERSAMPLE× theo trục pan (base/travel nhân theo, trục kia giữ nguyên)
+  // rồi downscale về khung — bước crop từ 1px còn 1/SS px.
+  const S = SUPERSAMPLE;
   if (plan.mode === 'pan-v') {
+    const scaledH = even((r.h * W) / r.w) * S;
     const y =
       (plan.travelPx ?? 0) > 0
-        ? `'${plan.basePx}+${plan.travelPx}*${frac}'`
-        : String(plan.basePx ?? 0);
-    return `[0:v]${cropReg},scale=${W}:-2,crop=${W}:${H}:0:${y},setsar=1[v]`;
+        ? `'${(plan.basePx ?? 0) * S}+${(plan.travelPx ?? 0) * S}*${frac}'`
+        : String((plan.basePx ?? 0) * S);
+    return `[0:v]${cropReg},scale=${W}:${scaledH},crop=${W}:${H * S}:0:${y},scale=${W}:${H},setsar=1[v]`;
   }
 
   if (plan.mode === 'pan-h') {
+    const scaledW = even((r.w * H) / r.h) * S;
     const x =
       (plan.travelPx ?? 0) > 0
-        ? `'${plan.basePx}+${plan.travelPx}*${frac}'`
-        : String(plan.basePx ?? 0);
-    return `[0:v]${cropReg},scale=-2:${H},crop=${W}:${H}:${x}:0,setsar=1[v]`;
+        ? `'${(plan.basePx ?? 0) * S}+${(plan.travelPx ?? 0) * S}*${frac}'`
+        : String((plan.basePx ?? 0) * S);
+    return `[0:v]${cropReg},scale=${scaledW}:${H},crop=${W * S}:${H}:${x}:0,scale=${W}:${H},setsar=1[v]`;
   }
 
   if (plan.mode === 'static') {
@@ -196,7 +211,7 @@ export function kenburns(input: KenburnsInput): string {
       // (zoompan s=WxH cũng ép về đúng khung như vậy).
       return `[0:v]${cropReg},scale=${W}:${H},setsar=1[v]`;
     }
-    // blur-fill: nền scale-cover + boxblur; fg fit-inside TĨNH — không supersample ×2
+    // blur-fill: nền scale-cover + boxblur; fg fit-inside TĨNH — không supersample
     // (không có gì đổi giữa các frame thì không có rounding drift để mà jitter).
     const fitScale = Math.min(W / r.w, H / r.h);
     const fw = even(r.w * fitScale);
@@ -209,8 +224,8 @@ export function kenburns(input: KenburnsInput): string {
     );
   }
 
-  // mode zoom: zoompan tuyến tính → zoom vào tâm; supersample ×2 trước zoompan giảm jitter
-  // (jitter của zoompan direction-agnostic — mẹo ×2 che luôn zoom-out, không cần gì thêm).
+  // mode zoom: zoompan tuyến tính → zoom vào tâm; supersample trước zoompan + tmix 2 frame
+  // sau (xem header — jitter direction-agnostic nên che luôn cả zoom-out).
   const frames = Math.max(2, Math.round(dur * input.fps));
   const zoomTarget = Math.max(1, input.zoom);
   // reverse dùng dạng đóng Z-(Z-1)*on/(frames-1) — CẤM idiom `if(eq(on,1),Z,zoom-step)`
@@ -223,8 +238,8 @@ export function kenburns(input: KenburnsInput): string {
 
   if (!plan.blurFill) {
     return (
-      `[0:v]${cropReg},scale=${W * 2}:${H * 2},` +
-      `zoompan=z=${zExpr}:${zoomCenter}:d=1:s=${W}x${H},setsar=1[v]`
+      `[0:v]${cropReg},scale=${W * S}:${H * S},` +
+      `zoompan=z=${zExpr}:${zoomCenter}:d=1:s=${W}x${H},tmix=frames=2,setsar=1[v]`
     );
   }
 
@@ -235,8 +250,8 @@ export function kenburns(input: KenburnsInput): string {
   return (
     `[0:v]split=2[bg][fg];` +
     `[bg]${cropReg},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=20:1[bgb];` +
-    `[fg]${cropReg},scale=${fw * 2}:${fh * 2},` +
-    `zoompan=z=${zExpr}:${zoomCenter}:d=1:s=${fw}x${fh}[fgz];` +
+    `[fg]${cropReg},scale=${fw * S}:${fh * S},` +
+    `zoompan=z=${zExpr}:${zoomCenter}:d=1:s=${fw}x${fh},tmix=frames=2[fgz];` +
     `[bgb][fgz]overlay=(W-w)/2:(H-h)/2,setsar=1[v]`
   );
 }
