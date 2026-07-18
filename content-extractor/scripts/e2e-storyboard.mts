@@ -1,4 +1,4 @@
-// E2E Stage 1 + 1.5 qua dev server + mock OpenAI vision (không tốn API thật).
+// E2E nhận chapter + storyboard qua dev server + mock OpenAI vision (không tốn API thật).
 // Cách chạy (Node 24):
 //   1. node scripts/mock-openai-vision.mjs                      # mock vision :3106
 //   2. PORT=3105 OPENAI_API_KEY=mock-key OPENAI_BASE_URL=http://localhost:3106/v1 \
@@ -6,9 +6,10 @@
 //      SETTINGS_FILE=/dev/null npm run dev
 //      (SETTINGS_FILE=/dev/null: không ăn .settings.json của dev — e2e phải chạy ENV thuần)
 //   3. npx tsx scripts/e2e-storyboard.mts                       # (E2E_BASE đổi được)
-// Phủ: upload gộp ảnh dài + chia band + cô lập lỗi Stage 1 + storyboard 1 beat/band +
-// sửa tay + Generate (vision) + reorder + lưu project .mtvproj; smart-split né bubble
-// ngay lúc upload; mở lại project (không re-ingest); PDF vào pipeline; split/merge đã gỡ.
+// Phủ: upload gộp ảnh dài + chia band → storyboard beats pending sạch → Generate all
+// (batch vision, lỗi cô lập từng nhịp, không đè bản sửa tay) + Generate lẻ + sửa tay +
+// reorder + lưu/mở project .mtvproj (không re-ingest); PDF vào pipeline; route Stage 1
+// cũ (/run, /export) đã gỡ → 404.
 import AdmZip from 'adm-zip';
 import sharp from 'sharp';
 
@@ -38,16 +39,6 @@ async function pollStoryboard(jobId: string, timeoutMs = 60000): Promise<any> {
     const dto = await api<any>(`/api/jobs/${jobId}/storyboard`);
     if (dto.progress.phase === 'done' || dto.progress.phase === 'failed') return dto;
     if (Date.now() - start > timeoutMs) throw new Error('Storyboard quá thời gian chờ');
-    await new Promise((r) => setTimeout(r, 500));
-  }
-}
-
-async function pollJob(jobId: string, timeoutMs = 60000): Promise<any> {
-  const start = Date.now();
-  for (;;) {
-    const dto = await api<any>(`/api/jobs/${jobId}`);
-    if (dto.progress.phase === 'done' || dto.progress.phase === 'failed') return dto;
-    if (Date.now() - start > timeoutMs) throw new Error('Job quá thời gian chờ');
     await new Promise((r) => setTimeout(r, 500));
   }
 }
@@ -134,8 +125,8 @@ async function itemDims(imageUrl: string): Promise<{ w: number; h: number }> {
   return { w: m.width!, h: m.height! };
 }
 
-// ============ A. UPLOAD GỘP + CHIA BAND → STAGE 1 → STORYBOARD ============
-console.log('A. Upload 3 khối sọc (thưa/đậm/thưa) → gộp + chia gutter → 3 band → Stage 1 (band sọc-đậm lỗi mock) → storyboard → edit → Generate → export');
+// ============ A. UPLOAD GỘP + CHIA BAND → STORYBOARD → GENERATE ALL ============
+console.log('A. Upload 3 khối sọc (thưa/đậm/thưa) → gộp + chia gutter → 3 band → storyboard pending sạch → Generate all (band sọc-đậm lỗi mock) → edit → Generate lẻ → export');
 {
   // 3 trang = khối sọc 600×900 + gutter 40 (canvas 600×2820). Thuật toán gutter cắt trong
   // gutter → mỗi khối 1 band. Khối giữa sọc 50% (mean ~127) → marker LỖI; hai khối ngoài
@@ -159,28 +150,35 @@ console.log('A. Upload 3 khối sọc (thưa/đậm/thưa) → gộp + chia gutt
   ok(dims.every((d) => d.w === 600), 'band full-width 600');
   ok(dims.every((d) => d.h >= 600), 'mỗi band ≥ minBandHeight (đủ ngữ cảnh)');
 
-  // Stage 1 với mock (band 2 đen tuyền → lỗi vision bền qua retry)
-  await api<any>(`/api/jobs/${job.jobId}/run`, {
+  // Route batch Stage 1 cũ đã gỡ — batch vision giờ nằm ở storyboard/generate
+  const runGone = await fetch(`${BASE}/api/jobs/${job.jobId}/run`, { method: 'POST' });
+  eq(runGone.status, 404, 'route /run cũ đã gỡ → 404');
+
+  // Storyboard từ job CHƯA có content → beats pending SẠCH, phase done (không compose mù)
+  await api<any>(`/api/jobs/${job.jobId}/storyboard`, { method: 'POST' });
+  let sb = await pollStoryboard(job.jobId);
+  eq(sb.progress.phase, 'done', 'tạo storyboard xong (không compose khi chưa có content)');
+  eq(sb.sourceKind, 'pages', 'sourceKind pages (band)');
+  eq(sb.beats.length, 3, 'mỗi band 1 nhịp');
+  ok(sb.beats.every((b: any) => b.region === null), 'region null (trọn band)');
+  ok(
+    sb.beats.every((b: any) => !b.error && b.narration === ''),
+    'fresh chapter → nhịp pending sạch, KHÔNG lỗi "Nội dung trống"',
+  );
+
+  // Generate all: batch vision mọi nhịp pending/error (band sọc-đậm → lỗi cô lập vào nhịp)
+  await api<any>(`/api/jobs/${job.jobId}/storyboard/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ rpm: 600 }),
   });
-  const doneJob = await pollJob(job.jobId, 120000);
-  const errored = doneJob.items.filter((it: any) => it.error);
-  eq(errored.length, 1, 'đúng 1 band lỗi vision (marker sọc-đậm)');
-  eq(errored[0]?.filename, 'band-2.jpg', 'band lỗi là band-2.jpg');
-
-  // Storyboard: 1 band = 1 nhịp, narration pre-fill từ content Stage 1
-  await api<any>(`/api/jobs/${job.jobId}/storyboard`, { method: 'POST' });
-  const sb = await pollStoryboard(job.jobId);
-  eq(sb.progress.phase, 'done', 'compose xong');
-  eq(sb.sourceKind, 'pages', 'sourceKind pages (band)');
-  eq(sb.beats.length, 3, 'mỗi band 1 nhịp');
-  ok(sb.beats.every((b: any) => b.region === null), 'region null (trọn band)');
+  sb = await pollStoryboard(job.jobId, 120000);
+  eq(sb.progress.phase, 'done', 'Generate all xong');
   const goodBeats = sb.beats.filter((b: any) => !b.error);
   const errBeats = sb.beats.filter((b: any) => b.error);
-  eq(goodBeats.length, 2, '2 nhịp có narration');
-  eq(errBeats.length, 1, '1 nhịp lỗi (band thiếu content) — job không sập');
+  eq(goodBeats.length, 2, '2 nhịp có narration từ vision');
+  eq(errBeats.length, 1, '1 nhịp lỗi (band marker) — cô lập, job không sập');
+  eq(errBeats[0]?.sourceIndex, 1, 'nhịp lỗi là band sọc-đậm (band-2)');
   ok(
     goodBeats.every((b: any) => b.narration === MOCK_NARRATION),
     'narration = template mô tả + thoại',
@@ -198,6 +196,19 @@ console.log('A. Upload 3 khối sọc (thưa/đậm/thưa) → gộp + chia gutt
   });
   ok(!fixed.error, 'PATCH narration xoá cờ lỗi');
   eq(fixed.durationHint, Math.ceil('Tự điền lời đọc.'.length / 15), 'durationHint tính lại');
+
+  // Generate all lần 2: không còn nhịp pending/error → bản sửa tay KHÔNG bị đè
+  await api<any>(`/api/jobs/${job.jobId}/storyboard/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rpm: 600 }),
+  });
+  const sbRerun = await pollStoryboard(job.jobId);
+  eq(
+    sbRerun.beats.find((b: any) => b.id === errBeats[0].id)?.narration,
+    'Tự điền lời đọc.',
+    'Generate all không đè nhịp đã sửa tay',
+  );
 
   // Sửa region + narration
   const b0 = sb.beats.find((b: any) => b.order === 0)!;
@@ -266,6 +277,8 @@ console.log('A. Upload 3 khối sọc (thưa/đậm/thưa) → gộp + chia gutt
   // Lưu project .mtvproj (thay export storyboard JSON cũ) — route cũ phải đã gỡ
   const oldExport = await fetch(`${BASE}/api/jobs/${job.jobId}/storyboard/export`);
   eq(oldExport.status, 404, 'route export storyboard cũ đã gỡ → 404');
+  const jobExportGone = await fetch(`${BASE}/api/jobs/${job.jobId}/export`);
+  eq(jobExportGone.status, 404, 'route Export JSON standalone đã gỡ → 404');
   const exportRes = await fetch(`${BASE}/api/project/export?jobId=${job.jobId}`);
   eq(exportRes.status, 200, 'export project 200');
   ok(
@@ -319,13 +332,13 @@ let bandCount: number;
   eq(dims.reduce((s, d) => s + d.h, 0), 1880, 'band phủ kín canvas');
   ok(dims.every((d) => d.w === 400), 'band full-width');
 
-  // Storyboard KHÔNG chạy Stage 1 trước → mọi nhịp thiếu content (lỗi), rồi Generate từng nhịp
+  // Storyboard từ job không content → nhịp pending sạch, rồi Generate từng nhịp (đường lẻ)
   await api<any>(`/api/jobs/${job.jobId}/storyboard`, { method: 'POST' });
   const sb = await pollStoryboard(job.jobId);
   eq(sb.beats.length, bandCount, `${bandCount} nhịp`);
   ok(
-    sb.beats.every((b: any) => b.error && b.narration === ''),
-    'chưa chạy Stage 1 → nhịp chờ Generate/điền tay',
+    sb.beats.every((b: any) => !b.error && b.narration === ''),
+    'chưa Generate → nhịp pending sạch chờ Generate/điền tay',
   );
   for (const b of sb.beats) {
     const gen = await api<any>(`/api/jobs/${job.jobId}/storyboard/beats/${b.id}/generate`, {
@@ -435,25 +448,36 @@ console.log('D. Xoá band (khu upload) + xoá nhịp (storyboard): hard-delete, 
   );
   eq(afterDel.progress.total, 2, 'D1: progress.total = 2 sau xoá');
 
-  // rpm=600 → pace 100ms/req (thật, qua mock vision network) → đủ cửa sổ đua để bắt 'processing'.
-  await api<any>(`/api/jobs/${job.jobId}/run`, {
+  // PATCH content Stage 1 đã gỡ khỏi route items — chỉ còn DELETE
+  const patchGone = await fetch(`${BASE}/api/jobs/${job.jobId}/items/0`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ description: 'x' }),
+  });
+  eq(patchGone.status, 405, 'D1: PATCH content item đã gỡ → 405');
+
+  // D2. Xoá nhịp storyboard: 200 + re-sequence order; beatId lạ → 404; job chưa có storyboard → 404;
+  // đang Generate all → 409 (vision qua mock network + pace 100ms/req → có cửa sổ đua thật).
+  await api<any>(`/api/jobs/${job.jobId}/storyboard`, { method: 'POST' });
+  const sb = await pollStoryboard(job.jobId);
+  eq(sb.progress.phase, 'done', 'D2: tạo storyboard xong (pending sạch)');
+  eq(sb.beats.length, 2, 'D2: 2 nhịp khớp 2 band còn lại sau D1');
+
+  await api<any>(`/api/jobs/${job.jobId}/storyboard/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ rpm: 600 }),
   });
-  const delRunning = await fetch(`${BASE}/api/jobs/${job.jobId}/items/0`, { method: 'DELETE' });
-  eq(delRunning.status, 409, 'D1: xoá khi job đang chạy (queued/processing) → 409');
-  await pollJob(job.jobId); // để Stage 1 kết thúc, tránh việc nền rò sang test sau
-
-  // D2. Xoá nhịp storyboard: 200 + re-sequence order; beatId lạ → 404; job chưa có storyboard → 404.
-  // (Không test race 'queued/processing' cho beat: storyboard tạo qua route này luôn là
-  // sourceKind 'pages' và composeBeat không gọi vision cho nhánh đó — compose chạy hết trong
-  // microtask, không có I/O thật như Stage 1, nên không có cửa sổ đua đáng tin cậy qua HTTP.
-  // 409 guard vẫn cài đúng ở route, cùng khuôn với guard job/run đã kiểm chứng ở D1.)
-  await api<any>(`/api/jobs/${job.jobId}/storyboard`, { method: 'POST' });
-  const sb = await pollStoryboard(job.jobId);
-  eq(sb.progress.phase, 'done', 'D2: compose xong');
-  eq(sb.beats.length, 2, 'D2: 2 nhịp khớp 2 band còn lại sau D1');
+  const delWhileGen = await fetch(
+    `${BASE}/api/jobs/${job.jobId}/storyboard/beats/${sb.beats[0].id}`,
+    { method: 'DELETE' },
+  );
+  eq(delWhileGen.status, 409, 'D2: xoá nhịp khi Generate all đang chạy → 409');
+  const sbGen = await pollStoryboard(job.jobId);
+  ok(
+    sbGen.beats.every((b: any) => b.narration === MOCK_NARRATION),
+    'D2: Generate all fill cả 2 nhịp (band sọc thưa)',
+  );
 
   const delBeatOOB = await fetch(
     `${BASE}/api/jobs/${job.jobId}/storyboard/beats/khong-ton-tai`,

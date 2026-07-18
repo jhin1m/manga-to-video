@@ -5,19 +5,19 @@ import { Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useProject } from '@/components/project-context';
 
-// 4 bước pipeline. href nhận jobId vì mọi bước sau Trích xuất đều là route theo job.
+// 3 bước pipeline theo job. Trang nhận chapter (`/`) không phải một bước — vào lại qua logo.
 const STAGES = [
-  { key: 'extract', label: 'Trích xuất', href: () => '/' },
   { key: 'storyboard', label: 'Storyboard', href: (id: string) => `/storyboard/${id}` },
   { key: 'script', label: 'Kịch bản', href: (id: string) => `/script/${id}` },
   { key: 'video', label: 'Video', href: (id: string) => `/video/${id}` },
 ] as const;
 
+// -1 = đang ở trang ngoài pipeline (vd `/` nhận chapter) — không node nào active.
 function stageIndexFromPath(pathname: string): number {
-  if (pathname.startsWith('/storyboard/')) return 1;
-  if (pathname.startsWith('/script/')) return 2;
-  if (pathname.startsWith('/video/')) return 3;
-  return 0;
+  if (pathname.startsWith('/storyboard/')) return 0;
+  if (pathname.startsWith('/script/')) return 1;
+  if (pathname.startsWith('/video/')) return 2;
+  return -1;
 }
 
 // jobId nằm ở segment thứ 2 của các route theo job (/storyboard/{id}, /script/{id}, /video/{id}).
@@ -38,11 +38,10 @@ export function StageStepper() {
   // hoặc bước đứng trước bước đang xem (đã đi qua trong phiên này).
   function unlocked(i: number): boolean {
     if (i === current) return true;
-    if (i === 0) return true;
     if (!jobId) return false;
-    if (i < current) return true;
-    if (i === 1) return state.hasStoryboard;
-    if (i === 2) return state.storyboardDone;
+    if (current >= 0 && i < current) return true;
+    if (i === 0) return state.hasStoryboard;
+    if (i === 1) return state.storyboardDone;
     return state.scriptConfirmed;
   }
 
@@ -50,7 +49,7 @@ export function StageStepper() {
     <nav aria-label="Các bước xử lý" className="flex items-center gap-1 overflow-x-auto">
       {STAGES.map((stage, i) => {
         const isCurrent = i === current;
-        const isDone = i < current;
+        const isDone = current >= 0 && i < current;
         const canGo = unlocked(i);
         return (
           <div key={stage.key} className="flex shrink-0 items-center gap-1">
@@ -60,8 +59,7 @@ export function StageStepper() {
               disabled={!canGo || isCurrent}
               aria-current={isCurrent ? 'step' : undefined}
               onClick={() => {
-                if (i === 0) router.push('/');
-                else if (jobId) router.push(stage.href(jobId));
+                if (jobId) router.push(stage.href(jobId));
               }}
               className={cn(
                 'flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm transition-colors',

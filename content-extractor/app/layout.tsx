@@ -9,7 +9,7 @@ import { ProjectProvider } from "@/components/project-context";
 export const metadata: Metadata = {
   title: "Manga Content Extractor",
   description:
-    "Trích xuất nội dung từng cảnh (mô tả + thoại) từ chapter manga bằng vision LLM.",
+    "Nhận chapter manga → storyboard theo nhịp (Generate bằng vision LLM) → kịch bản → video.",
 };
 
 export default function RootLayout({

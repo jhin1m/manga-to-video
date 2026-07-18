@@ -77,18 +77,26 @@ async function pollDone(path: string, timeoutMs = 60000): Promise<any> {
   }
 }
 
-console.log('A. Chuẩn bị: upload 3 khối sọc → Stage 1 (mock vision) → storyboard');
+console.log('A. Chuẩn bị: upload 3 khối sọc → storyboard pending → Generate all (mock vision)');
 const fd = new FormData();
 fd.append('images', toBlob(await stripePage(600, 900), 'image/jpeg'), '1.jpg');
 fd.append('images', toBlob(await stripePage(600, 900), 'image/jpeg'), '2.jpg');
 fd.append('images', toBlob(await stripePage(600, 900), 'image/jpeg'), '3.jpg');
 const job = await api<any>('/api/jobs', { method: 'POST', body: fd });
 eq(job.items.length, 3, '3 band');
-await post(`/api/jobs/${job.jobId}/run`, { rpm: 600 });
-await pollDone(`/api/jobs/${job.jobId}`);
 await api<any>(`/api/jobs/${job.jobId}/storyboard`, { method: 'POST' });
+const sbPending = await pollDone(`/api/jobs/${job.jobId}/storyboard`);
+ok(
+  sbPending.beats.every((b: any) => !b.error && b.narration === ''),
+  'chưa Generate → nhịp pending sạch',
+);
+await post(`/api/jobs/${job.jobId}/storyboard/generate`, { rpm: 600 });
 const sb = await pollDone(`/api/jobs/${job.jobId}/storyboard`);
 eq(sb.beats.length, 3, '3 nhịp');
+ok(sb.beats.every((b: any) => b.narration.length > 0), 'Generate all fill mọi nhịp');
+// Content reuse (chống double-vision): Generate all đã ghi scene vào working.content nên
+// bước Kịch bản không gọi vision lần 2 — assert đơn vị nằm ở verify-narration (mock đếm
+// được call); ở tầng E2E, script tạo được không lỗi (block B) là đủ bằng chứng luồng.
 
 console.log('B. Kịch bản AI: POST script (mock model) — gộp/loại index ngoài biên');
 {

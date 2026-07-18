@@ -10,6 +10,7 @@ import {
   getStoryboard,
   setBeatError,
   setBeatResult,
+  setWorkingContent,
   updateStoryboardProgress,
   type StoredBeat,
   type WorkingImage,
@@ -68,7 +69,8 @@ export async function composeBeat(
   }
   try {
     let scene: SceneContent | null;
-    if (opts?.vision || state.sourceKind === 'strip') {
+    const useVision = opts?.vision === true || state.sourceKind === 'strip';
+    if (useVision) {
       const band = beat.region ?? { x: 0, y: 0, w: working.width, h: working.height };
       const cropped = await cropRegion(working, band);
       scene = await describeImage(cropped, `beat#${beat.order}`, getJob(jobId)?.context);
@@ -79,12 +81,15 @@ export async function composeBeat(
     if (!untouched()) return;
     const narration = scene ? fillNarration(scene) : '';
     if (!narration) {
-      setBeatError(
-        jobId,
-        beatId,
-        'Nội dung trống — chạy trích xuất Stage 1, bấm Generate, hoặc tự điền narration.',
-      );
+      setBeatError(jobId, beatId, 'Nội dung trống — bấm Generate hoặc tự điền narration.');
       return;
+    }
+    // Persist content cho bước Kịch bản reuse — chỉ khi thành công và chỉ nhánh pages
+    // (band↔beat 1:1); strip có nhiều beat chung một canvas, ghi content lên canvas sẽ lẫn
+    // nội dung giữa các nhịp. Scene rỗng KHÔNG persist — beat lỗi thì fallback Kịch bản
+    // còn thấy band này missing để tự vision lại.
+    if (useVision && scene && state.sourceKind === 'pages') {
+      setWorkingContent(jobId, beat.sourceIndex, scene);
     }
     setBeatResult(jobId, beatId, {
       narration,
@@ -96,26 +101,30 @@ export async function composeBeat(
   }
 }
 
-// Compose mọi beat pending của storyboard. Lỗi từng beat được cô lập (mẫu processChapter
-// Stage 1), không bao giờ sập cả job. Pacer chỉ áp cho strip (2A gọi vision); pages là
-// template thuần — không giãn nhịp vô ích.
+// Compose hàng loạt. Lỗi từng beat được cô lập, không bao giờ sập cả job.
+// - Mặc định (template): chỉ beat pending, pacer chỉ áp cho strip (nhánh gọi vision).
+// - opts.vision (nút "Generate all"): chạy vision cho beat pending|error, luôn pace theo
+//   minIntervalMs; beat done (đã compose/sửa tay) không bị đụng tới.
 export async function composeStoryboard(
   jobId: string,
-  opts: { concurrency: number; minIntervalMs?: number },
+  opts: { concurrency: number; minIntervalMs?: number; vision?: boolean },
 ): Promise<void> {
   const state = getStoryboard(jobId);
   if (!state) return;
+  const useVision = opts.vision === true;
   updateStoryboardProgress(jobId, { phase: 'processing' });
   const limit = pLimit(opts.concurrency);
-  const pace = createPacer(state.sourceKind === 'strip' ? (opts.minIntervalMs ?? 0) : 0);
+  const pace = createPacer(
+    useVision || state.sourceKind === 'strip' ? (opts.minIntervalMs ?? 0) : 0,
+  );
   await Promise.all(
     state.beats
-      .filter((b) => b.status === 'pending')
+      .filter((b) => b.status === 'pending' || (useVision && b.status === 'error'))
       .map((beat) =>
         limit(async () => {
           await pace();
           updateStoryboardProgress(jobId, { currentIndex: beat.order });
-          await composeBeat(jobId, beat.id);
+          await composeBeat(jobId, beat.id, useVision ? { vision: true } : undefined);
         }),
       ),
   );

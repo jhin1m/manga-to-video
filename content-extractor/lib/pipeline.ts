@@ -2,12 +2,10 @@ import path from 'node:path';
 import AdmZip from 'adm-zip';
 import sharp from 'sharp';
 import pLimit from 'p-limit';
-import { getJob, setItemError, setItemResult, updateProgress } from './jobs';
 import { renderPdf } from './pdf';
 import { detectBands } from './smart-split';
 import { readStripRatio } from './source-kind';
 import { stitchSlices } from './stitch';
-import { classifyError, describeImage } from './vision';
 
 export interface RawImage {
   filename: string;
@@ -148,32 +146,4 @@ export function createPacer(minIntervalMs: number): () => Promise<void> {
     const wait = start - now;
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
   };
-}
-
-// Chạy vision cho toàn bộ item của job. Lỗi từng ảnh được cô lập vào item đó,
-// không bao giờ làm sập cả job.
-export async function processChapter(
-  jobId: string,
-  opts: { concurrency: number; minIntervalMs?: number },
-): Promise<void> {
-  const job = getJob(jobId);
-  if (!job) return;
-  updateProgress(jobId, { phase: 'processing' });
-  const limit = pLimit(opts.concurrency);
-  const pace = createPacer(opts.minIntervalMs ?? 0);
-  await Promise.all(
-    job.items.map((item) =>
-      limit(async () => {
-        await pace(); // giãn nhịp trước khi gọi — vẫn nằm dưới trần concurrency của p-limit
-        updateProgress(jobId, { currentIndex: item.index });
-        try {
-          const content = await describeImage(item.buffer, item.filename, job.context);
-          setItemResult(jobId, item.index, content);
-        } catch (err) {
-          setItemError(jobId, item.index, classifyError(err));
-        }
-      }),
-    ),
-  );
-  updateProgress(jobId, { phase: 'done', currentIndex: null });
 }

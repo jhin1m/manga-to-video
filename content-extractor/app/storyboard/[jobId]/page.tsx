@@ -7,6 +7,7 @@ import { ArrowDown, ArrowUp, ArrowRight, Sparkles, Trash2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import { Textarea } from '@/components/ui/textarea';
 import { PageShell } from '@/components/page-shell';
@@ -69,6 +70,7 @@ export default function StoryboardPage() {
   const [draftTouched, setDraftTouched] = useState(false); // người dùng đã gõ/kéo lên draft này chưa
   const [rowBusy, setRowBusy] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
+  const [rpm, setRpm] = useState(30); // nhịp vision (req/phút) cho Generate all — tránh 429
   const [rev, setRev] = useState(0); // cache-buster cho crop preview sau khi region/beat đổi
   // Kịch bản chỉ copy beat MỘT CHIỀU lúc generate — sửa nhịp sau đó không tự lan sang script.
   // hasScript (probe lúc mount) + editedAfterScript (đã lưu thay đổi nào đó) → banner nhắc tạo lại.
@@ -312,6 +314,27 @@ export default function StoryboardPage() {
     }
   }
 
+  // Batch vision cho mọi nhịp pending/error ("Generate all") — nhịp đã có narration/sửa tay
+  // không bị đụng tới (server filter + rev-guard). Tiến độ theo dõi qua SSE như compose.
+  async function generateAll() {
+    setBusy(true);
+    try {
+      const next = await fetchJSON<StoryboardDTO>(`/api/jobs/${jobId}/storyboard/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rpm }),
+      });
+      setDto(next);
+      setEditedAfterScript(true);
+      publish({ dirty: true });
+      attachStream();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Generate all thất bại');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function recreate() {
     setBusy(true);
     try {
@@ -363,6 +386,8 @@ export default function StoryboardPage() {
     ? dto.working.find((w) => w.sourceIndex === selected.sourceIndex)
     : undefined;
   const selectedBusy = selected ? rowBusy.has(selected.id) : false;
+  // Nhịp cần Generate all nhắm tới: chưa có lời đọc hoặc đang lỗi (bản sửa tay không bị đè).
+  const pendingCount = beats.filter((b) => !b.narration.trim() || b.error).length;
   const dirtyDraft =
     draftTouched &&
     selected !== null &&
@@ -378,6 +403,29 @@ export default function StoryboardPage() {
       wide
       actions={
         <>
+          <label className="flex items-center gap-2 text-sm text-muted-foreground">
+            Nhịp
+            <Input
+              type="number"
+              min={1}
+              max={600}
+              value={rpm}
+              onChange={(e) =>
+                setRpm(Math.min(600, Math.max(1, Math.round(Number(e.target.value) || 1))))
+              }
+              className="w-20"
+            />
+            req/phút
+          </label>
+          <Button
+            variant="ai"
+            onClick={generateAll}
+            disabled={busy || running || pendingCount === 0}
+            title="Generate lời đọc bằng AI vision cho mọi nhịp chưa có nội dung hoặc đang lỗi"
+          >
+            <Sparkles data-icon="inline-start" />
+            {running ? 'Đang generate…' : `Generate all (${pendingCount})`}
+          </Button>
           <Button variant="outline" onClick={recreate} disabled={busy || running}>
             {busy ? 'Đang tạo…' : 'Tạo lại storyboard'}
           </Button>

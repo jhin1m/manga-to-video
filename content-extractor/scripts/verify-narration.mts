@@ -1,5 +1,8 @@
-// Verify narration: fillNarration template + skeletonBeats + composeStoryboard (template).
-// Nhánh vision (nút Generate) verify ở e2e (scripts/e2e-storyboard.mts) qua mock OpenAI server.
+// Verify narration: fillNarration template + skeletonBeats + composeStoryboard (template)
+// + nhánh vision batch (Generate all): mock OpenAI in-process đếm call, assert scene persist
+// vào working.content (bước Kịch bản reuse — không double-vision) và beat done không bị đè.
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import sharp from 'sharp';
 import {
   composeStoryboard,
@@ -73,6 +76,52 @@ console.log('Test 3: composeStoryboard (template từ content Stage 1, không m�
 console.log('Test 4: durationHint tỉ lệ độ dài');
 ok(estimateSeconds('x'.repeat(150)) === 10 && estimateSeconds('x'.repeat(300)) === 20, '150 ký tự → 10s, 300 → 20s');
 eq(estimateSeconds(''), 0, 'rỗng → 0');
+
+console.log('Test 5: composeStoryboard vision:true — Generate all + persist working.content');
+{
+  process.env.SETTINGS_FILE = '/dev/null'; // ENV thuần, không ăn .settings.json của dev
+  process.env.OPENAI_API_KEY = 'mock-key';
+  process.env.VISION_MODEL = 'mock-vision';
+  let visionCalls = 0;
+  const scene = { description: 'Cảnh mock.', dialogue: ['Thoại mock.'], note: '' };
+  const server = http.createServer((_req, res) => {
+    visionCalls++;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(scene) } }] }));
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  process.env.OPENAI_BASE_URL = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+
+  const page = await sharp({
+    create: { width: 600, height: 900, channels: 3, background: { r: 200, g: 200, b: 200 } },
+  })
+    .jpeg()
+    .toBuffer();
+  const working = [
+    { sourceIndex: 0, buffer: page, width: 600, height: 900, content: null },
+    { sourceIndex: 1, buffer: page, width: 600, height: 900, content: null },
+  ];
+  const beats = skeletonBeats(working.map((w) => ({ sourceIndex: w.sourceIndex })));
+  createStoryboard({ jobId: 'test-v5', sourceKind: 'pages', working, beats });
+  await composeStoryboard('test-v5', { concurrency: 2, vision: true });
+  const state = getStoryboard('test-v5')!;
+  eq(visionCalls, 2, 'vision gọi đúng 1 lần cho mỗi beat pending');
+  ok(
+    state.beats.every((b) => b.status === 'done' && b.narration === 'Cảnh mock.\n"Thoại mock."'),
+    'narration fill từ vision, mọi beat done',
+  );
+  eq(
+    state.working.map((w) => w.content),
+    [scene, scene],
+    'scene persist vào working.content — bước Kịch bản reuse, không double-vision',
+  );
+
+  // Chạy lại Generate all: không còn beat pending/error → vision không bị gọi thêm,
+  // narration hiện có không bị đè.
+  await composeStoryboard('test-v5', { concurrency: 2, vision: true });
+  eq(visionCalls, 2, 'Generate all lần 2 trên beat done → 0 call vision thêm');
+  server.close();
+}
 
 console.log(failures === 0 ? '\nALL_PASS' : `\nFAILURES: ${failures}`);
 process.exit(failures === 0 ? 0 : 1);

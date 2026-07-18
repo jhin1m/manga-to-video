@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
-import { getJob, toJobStatusDTO, updateProgress } from '@/lib/jobs';
-import { processChapter } from '@/lib/pipeline';
+import { composeStoryboard } from '@/lib/narration';
+import {
+  getStoryboard,
+  toStoryboardDTO,
+  updateStoryboardProgress,
+} from '@/lib/storyboard-store';
 import { readVisionConfig, type VisionConfig } from '@/lib/vision';
 
 export const runtime = 'nodejs';
@@ -13,14 +17,16 @@ function resolveRpm(raw: unknown, fallback: number): number {
   return Math.min(Math.round(raw), MAX_RPM);
 }
 
+// Batch vision cho storyboard ("Generate all"): chạy describeImage cho mọi beat
+// pending/error, tiến độ phát qua SSE sb:{jobId}. Beat done (đã sửa tay) không bị đè.
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const job = getJob(id);
-  if (!job) {
-    return NextResponse.json({ error: 'Không tìm thấy job' }, { status: 404 });
+  const state = getStoryboard(id);
+  if (!state) {
+    return NextResponse.json({ error: 'Chưa có storyboard cho job này' }, { status: 404 });
   }
-  if (job.progress.phase === 'queued' || job.progress.phase === 'processing') {
-    return NextResponse.json({ error: 'Job đang chạy' }, { status: 409 });
+  if (state.progress.phase === 'queued' || state.progress.phase === 'processing') {
+    return NextResponse.json({ error: 'Storyboard đang xử lý' }, { status: 409 });
   }
 
   let config: VisionConfig;
@@ -43,12 +49,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
   const minIntervalMs = rpm > 0 ? Math.ceil(60000 / rpm) : 0;
 
-  // Đánh dấu 'queued' đồng bộ trước khi fire-and-forget để snapshot SSE ngay không lọt phase 'ready'.
-  updateProgress(id, { phase: 'queued', currentIndex: null });
-  processChapter(id, { concurrency: config.concurrency, minIntervalMs }).catch((err) => {
-    console.error('[pipeline] job thất bại:', err);
-    updateProgress(id, { phase: 'failed', currentIndex: null });
+  // Đánh dấu 'queued' đồng bộ trước fire-and-forget để snapshot SSE ngay không lọt phase cũ.
+  updateStoryboardProgress(id, { phase: 'queued', currentIndex: null });
+  composeStoryboard(id, {
+    concurrency: config.concurrency,
+    minIntervalMs,
+    vision: true,
+  }).catch((err) => {
+    console.error('[storyboard] generate-all thất bại:', err);
+    updateStoryboardProgress(id, { phase: 'failed', currentIndex: null });
   });
 
-  return NextResponse.json(toJobStatusDTO(job));
+  return NextResponse.json(toStoryboardDTO(getStoryboard(id)!));
 }

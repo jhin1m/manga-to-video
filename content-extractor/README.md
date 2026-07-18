@@ -1,10 +1,10 @@
-# Manga Content Extractor (Stage 1 + 1.5 + 2)
+# Manga Content Extractor
 
-Tool nội bộ, một người vận hành. Xử lý manga theo ba stage:
+Tool nội bộ, một người vận hành. Pipeline: **Nhận chapter → Storyboard → Kịch bản → Video.**
 
-**Stage 1:** Nhận chapter (nhiều ảnh đánh số / file zip / file PDF) → **gộp toàn bộ thành một canvas dọc rồi chia lại thành band tại gutter** (khoảng trắng ngang dày) — mỗi band giữ trọn một đơn vị nội dung (nhân vật kèm bong bóng), không cắt ngang bubble/chữ → gọi vision LLM (OpenAI-compatible) → bảng nội dung từng band (`mô tả + thoại + ghi chú`, tiếng Việt) → sửa tay inline → xuất **JSON manifest**.
+**Nhận chapter (`/`):** nhận nhiều ảnh đánh số / file zip / file PDF → **gộp toàn bộ thành một canvas dọc rồi chia lại thành band tại gutter** (khoảng trắng ngang dày) — mỗi band giữ trọn một đơn vị nội dung (nhân vật kèm bong bóng), không cắt ngang bubble/chữ → xem trước lưới band, xoá band thừa, nhập ngữ cảnh chương → **Tạo storyboard**. Trang này KHÔNG gọi vision.
 
-**Stage 1.5:** Từ chapter hoặc manifest, tạo **storyboard** = danh sách nhịp hình ảnh + lời đọc (dành cho TTS + video tạo Ken Burns). Mỗi band từ lúc upload = 1 nhịp — biên nhịp đã chuẩn từ ingest nên không cần tách/gộp tay. Nhịp thiếu nội dung (chưa chạy Stage 1) bấm **Generate** (vision) hoặc điền tay.
+**Storyboard:** danh sách nhịp hình ảnh + lời đọc (dành cho TTS + video tạo Ken Burns). Mỗi band từ lúc upload = 1 nhịp — biên nhịp đã chuẩn từ ingest nên không cần tách/gộp tay. Nhịp khởi tạo **pending sạch** (chưa có lời đọc); bấm **Generate all** (batch vision toàn bộ nhịp pending/lỗi, giãn nhịp theo RPM, tiến độ live) hoặc **Generate ✨** từng nhịp, hoặc điền tay. Nội dung vision (`mô tả + thoại`, tiếng Việt) được lưu lại để bước Kịch bản dùng — không gọi vision lần hai.
 
 **Stage 2:** **Kịch bản AI + Video.** Model text (biên kịch) đọc nội dung mọi band → viết kịch bản kể mạch lạc, **gộp/tách band** thành `ScriptSegment[]` (1 lời kể ↔ 1+ shot) → người duyệt/sửa/chốt ở UI → preview video xấp xỉ (`/video/{jobId}`, Ken Burns CSS + phụ đề live + BGM) → export **bundle.zip** → CLI ffmpeg render **MP4 + .srt + timeline.json**. Bất biến sync: audio TTS là nhạc trưởng — narration khớp cứng với segment, audio phân bổ cho các shot theo weight.
 
@@ -30,7 +30,7 @@ npm run dev                  # http://localhost:3000
 > Nút "Dùng theo ENV" trong dialog xóa `.settings.json` → quay về cấu hình ENV dưới đây.
 > Test/e2e đặt `SETTINGS_FILE=/dev/null` để chạy ENV thuần.
 
-**Vision LLM (Stage 1)**
+**Vision LLM (Generate — Storyboard)**
 
 | Biến | Ý nghĩa | Mặc định |
 |------|---------|----------|
@@ -39,7 +39,7 @@ npm run dev                  # http://localhost:3000
 | `VISION_MODEL` | Model vision | `gpt-4o-mini` |
 | `MAX_EDGE` | Cạnh dài tối đa ảnh gửi model (px, downscale trước khi encode). Ảnh dải dọc (ratio ≥ `STRIP_RATIO`) chỉ kẹp **bề rộng** theo ngưỡng này; giữ nguyên chiều cao để stitch/smart-split không mất chữ. Payload vision luôn ≤ `MAX_EDGE` | `1568` |
 | `VISION_CONCURRENCY` | Số ảnh gọi vision song song | `4` |
-| `VISION_RPM` | Nhịp tối đa khi bấm Chạy (requests/phút) — giãn thời điểm bắt đầu mỗi request để chặn 429; chỉnh nhanh mỗi lượt bằng ô "Nhịp" cạnh nút Chạy | `30` |
+| `VISION_RPM` | Nhịp tối đa khi bấm Generate all (requests/phút) — giãn thời điểm bắt đầu mỗi request để chặn 429; chỉnh nhanh mỗi lượt bằng ô "Nhịp" cạnh nút Generate all (trang Storyboard) | `30` |
 | `VISION_DISABLE_THINKING` | Tắt "thinking/reasoning" của model (GLM z.ai) để tiết kiệm ~50% token | `false` |
 
 Chuyển sang Z.AI GLM: `OPENAI_BASE_URL=https://api.z.ai/api/paas/v4` + `VISION_MODEL=glm-4.5v` + `VISION_DISABLE_THINKING=true`.
@@ -87,30 +87,28 @@ Hai provider chọn được. Chọn **per-project** bằng dropdown ở trang v
 | `LINE_TOLERANCE` | Hàng "an toàn" khi chênh lệch 2 pixel liền kề ≤ ngưỡng này (0-255; 25 ≈ 90% sensitivity) | `25` |
 | `IGNORABLE_BORDER` | Bỏ qua N px sát mép trái/phải khi xét safe-line (viền, watermark dọc mép) | `5` |
 
-## Luồng sử dụng (Stage 1)
+## Luồng sử dụng (Nhận chapter — `/`)
 
 1. Kéo thả ảnh (`1.jpg, 2.jpg, …` — thứ tự đọc theo natural sort tên file) hoặc 1 file `.zip` / `.pdf` (file rác macOS trong zip tự bị lọc).
-2. **Tải lên & xem trước** → tạo job: downscale từng ảnh → **gộp toàn bộ thành một canvas dọc → chia band tại gutter** (khoảng trắng ngang dày; `band-1.jpg, band-2.jpg, …`) — **chưa gọi vision**; hiện lưới thumbnail band theo thứ tự đọc. Thừa band? Bấm **✕** trên ô band để xoá (chỉ khi chưa chạy).
-3. Chỉnh **Nhịp** (req/phút) nếu cần rồi bấm **Chạy tất cả** → vision cho từng band, theo dõi tiến độ realtime (SSE, có poll dự phòng). Request được giãn nhịp để tránh lỗi 429.
-4. Band lỗi hiện badge đỏ + nút **Thử lại** (lỗi từng band được cô lập, không làm sập job).
-5. **Sửa** nội dung inline → **Lưu**.
-6. **Export JSON** → tải `manifest-<jobId>.json`.
-7. (Hoặc từ trang chính) **Tạo storyboard** (nút xuất hiện ở phase `ready` / `done`) → nhảy sang `/storyboard/{jobId}`.
+2. **Tải lên & xem trước** → tạo job: downscale từng ảnh → **gộp toàn bộ thành một canvas dọc → chia band tại gutter** (khoảng trắng ngang dày; `band-1.jpg, band-2.jpg, …`) — **không gọi vision**; hiện lưới thumbnail band theo thứ tự đọc. Thừa band? Bấm **✕** trên ô band để xoá.
+3. Nhập **ngữ cảnh chương** (nhân vật, xưng hô — tuỳ chọn, dùng cho cả Generate lẫn kịch bản).
+4. **Tạo storyboard** → nhảy sang `/storyboard/{jobId}`. Quay lại `/` bằng logo trên top bar.
 
-## Luồng sử dụng (Stage 1.5 — Storyboard)
+## Luồng sử dụng (Storyboard)
 
-1. Tạo storyboard qua nút **"Tạo storyboard"** (trang chính) hoặc trực tiếp `/api/jobs/{id}/storyboard` → **mỗi band = 1 nhịp**, region `null` (trọn band), narration pre-fill từ content Stage 1 (template thuần, không gọi vision).
-2. Trang `/storyboard/{jobId}` bố cục **master–detail**: cột trái = danh sách nhịp gọn (thumbnail + reorder ▲▼), cột phải = chi tiết nhịp đang chọn.
-3. Biên tập nhịp (panel chi tiết):
+1. Tạo storyboard qua nút **"Tạo storyboard"** (trang chính) hoặc trực tiếp `/api/jobs/{id}/storyboard` → **mỗi band = 1 nhịp**, region `null` (trọn band), nhịp ở trạng thái **pending sạch** (chưa có lời đọc, không lỗi).
+2. Bấm **Generate all (N nhịp)** (chỉnh ô **Nhịp** req/phút nếu cần) → batch vision cho mọi nhịp pending/lỗi, tiến độ live (SSE + poll dự phòng), request giãn nhịp tránh 429. Lỗi từng nhịp được cô lập; nhịp đã có lời đọc / đã sửa tay KHÔNG bị đè. Nội dung vision đồng thời được lưu để bước Kịch bản dùng lại (không gọi vision lần 2).
+3. Trang `/storyboard/{jobId}` bố cục **master–detail**: cột trái = danh sách nhịp gọn (thumbnail + reorder ▲▼), cột phải = chi tiết nhịp đang chọn.
+4. Biên tập nhịp (panel chi tiết):
    - **Region**: **kéo khung trên ảnh** để chọn vùng, kéo trong khung để di chuyển; toggle "Cả trang"; nút **"Vừa khít nội dung"** co region bám vùng có mực (bỏ lề trắng, chỉ thủ công); khối "Nâng cao" giữ numeric x/y/w/h (đồng bộ 2 chiều, chỉnh bằng bàn phím). Region đi thẳng vào khung hình video khi tạo kịch bản.
    - **Hiệu ứng (Ken Burns)**: chip trên ô preview là **dropdown chọn mode** per-nhịp (Auto · Lia dọc · Lia ngang · Zoom · Tĩnh) + nút **đảo hướng** (lia ↑/←, zoom-out). Mặc định Auto tự suy từ hình dáng vùng; mode bất khả thi với vùng đang chọn bị mờ kèm tooltip. Sửa nhịp khi đã có kịch bản → banner nhắc **tạo lại kịch bản** để thay đổi đi vào video.
    - **Narration** (lời đọc): sửa tay, durationHint tự cập nhật theo độ dài.
-   - **Generate ✨**: gọi vision cho riêng nhịp đó (crop vùng nhịp → mô tả + thoại) — dùng khi chưa chạy Stage 1, khi band lỗi, hoặc muốn soạn lại từ ảnh.
+   - **Generate ✨**: gọi vision cho riêng nhịp đó (crop vùng nhịp → mô tả + thoại) — dùng khi nhịp lỗi hoặc muốn soạn lại từ ảnh (đè bản hiện có vì người dùng chủ động bấm).
    - **Xoá**: bỏ hẳn một nhịp khỏi storyboard (re-order phần còn lại; chỉ khi không đang compose).
-4. **Lưu project** (top bar) → tải `project-<jobId>.mtvproj` (zip tự chứa: data + ảnh working/band + audio đã synth). Store server là in-memory — file này là bản lưu duy nhất của phiên làm việc.
-5. **Mở project** (top bar) → chọn 1 file `.mtvproj` → hydrate lại Job + Storyboard + Kịch bản + Audio, **không cần chọn lại ảnh rời, không re-ingest, không phụ thuộc env** — toạ độ region khớp tuyệt đối. Tự điều hướng tới stage phù hợp (storyboard / kịch bản / video).
+5. **Lưu project** (top bar) → tải `project-<jobId>.mtvproj` (zip tự chứa: data + ảnh working/band + audio đã synth). Store server là in-memory — file này là bản lưu duy nhất của phiên làm việc.
+6. **Mở project** (top bar) → chọn 1 file `.mtvproj` → hydrate lại Job + Storyboard + Kịch bản + Audio, **không cần chọn lại ảnh rời, không re-ingest, không phụ thuộc env** — toạ độ region khớp tuyệt đối. Tự điều hướng tới stage phù hợp (storyboard / kịch bản / video).
 
-Có thể tạo storyboard **ngay từ phase xem trước** (chưa chạy Stage 1): mọi nhịp trống → bấm Generate từng nhịp cần thiết, không đốt vision cho cả chapter.
+Không bắt buộc Generate all trước khi tạo kịch bản: nhịp chưa Generate sẽ được vision fallback tự mô tả ở bước Kịch bản (lỗi cô lập); chỉ Generate lẻ vài nhịp cần thiết cũng được, không đốt vision cho cả chapter.
 
 ## Luồng sử dụng (Stage 2 — Kịch bản AI + Video)
 
@@ -126,31 +124,28 @@ Có thể tạo storyboard **ngay từ phase xem trước** (chưa chạy Stage 
    ```
    Flags: `--aspect 9:16|16:9|1:1` · `--fps N` · `--bgm file` · `--subs srt|burn|both` · `--keep` (giữ `.render/<jobId>/` debug). Cùng bundle đổi `--aspect` ra 2 MP4 — TTS ăn cache, **không gọi ElevenLabs lại**. Đầu ra: `out.mp4` + `out.srt` (caption **tách theo câu**, luôn xuất) + `out.timeline.json` (bảng review khớp timing video).
 
-## API (Stage 1)
+## API (Nhận chapter — job)
 
 | Method | Route | Chức năng |
 |--------|-------|-----------|
-| POST | `/api/jobs` | multipart (`images[]` / `zip` / `pdf`) → tạo job ở phase `ready` (downscale → gộp canvas → chia band, **chưa** gọi vision) → trả về `{jobId, progress, items}` — item là band |
-| POST | `/api/jobs/{id}/run` | body `{rpm?}` → vision cho toàn bộ item (rate limit), pipeline nền |
+| POST | `/api/jobs` | multipart (`images[]` / `zip` / `pdf`) → tạo job ở phase `ready` (downscale → gộp canvas → chia band, **không** gọi vision) → trả về `{jobId, progress, items}` — item là band |
 | GET | `/api/jobs/{id}` | trạng thái + item |
-| GET | `/api/jobs/{id}/stream` | SSE tiến độ (snapshot + real-time updates) |
-| GET | `/api/jobs/{id}/export` | manifest JSON (attachment) |
-| PATCH | `/api/jobs/{id}/items/{i}` | sửa `{description?, dialogue?, note?}` |
-| DELETE | `/api/jobs/{id}/items/{i}` | xoá band (re-index phần còn lại). `404` index ngoài biên, `409` khi job đang chạy |
+| PATCH | `/api/jobs/{id}` | body `{context}` → lưu ngữ cảnh chương (tiêm vào vision + biên kịch) |
+| DELETE | `/api/jobs/{id}/items/{i}` | xoá band (re-index phần còn lại). `404` index ngoài biên |
 | GET | `/api/jobs/{id}/items/{i}/image` | thumbnail JPEG (downscale) |
-| POST | `/api/jobs/{id}/items/{i}/retry` | vision lại cho 1 item |
 
-## API (Stage 1.5 — Storyboard)
+## API (Storyboard)
 
 | Method | Route | Chức năng |
 |--------|-------|-----------|
-| POST | `/api/jobs/{id}/storyboard` | không body → tạo storyboard từ job (1 band = 1 nhịp, narration từ content Stage 1). Trả về `{jobId, createdAt, sourceKind, progress, working, beats}` ở phase `queued` |
+| POST | `/api/jobs/{id}/storyboard` | không body → tạo storyboard từ job (1 band = 1 nhịp). Job chưa có content → beats `pending` sạch, phase `done` ngay; job import có content → compose template nền. Trả về `{jobId, createdAt, sourceKind, progress, working, beats}` |
+| POST | `/api/jobs/{id}/storyboard/generate` | body `{rpm?}` → **Generate all**: batch vision mọi beat pending/error (giãn nhịp RPM, lỗi cô lập từng beat, beat done không bị đè, scene lưu vào working để Kịch bản reuse). `400` thiếu cấu hình vision, `409` khi đang chạy |
 | GET | `/api/jobs/{id}/storyboard` | trạng thái + beat hiện tại |
-| GET | `/api/jobs/{id}/storyboard/stream` | SSE tiến độ compose |
+| GET | `/api/jobs/{id}/storyboard/stream` | SSE tiến độ compose/generate |
 | PATCH | `/api/jobs/{id}/storyboard/beats/{beatId}` | sửa beat `{narration?, region?, motion?, order?}` (region chuẩn: x/y ≥ 0, w/h ≥ 1, trong biên ảnh nguồn; motion `null` = auto hoặc `{mode: 'pan-v'\|'pan-h'\|'zoom'\|'static', reverse?}`) |
 | DELETE | `/api/jobs/{id}/storyboard/beats/{beatId}` | xoá nhịp (re-order phần còn lại). `404` beat/storyboard không có, `409` khi đang compose |
 | POST | `/api/jobs/{id}/storyboard/beats/{beatId}/generate` | **Generate bằng vision**: crop vùng nhịp → mô tả + thoại → narration (lỗi cô lập vào beat) |
-| POST | `/api/jobs/{id}/storyboard/beats/{beatId}/retry` | compose lại từ content Stage 1 (không gọi vision) |
+| POST | `/api/jobs/{id}/storyboard/beats/{beatId}/retry` | compose lại từ content đã có của band (không gọi vision) |
 | GET | `/api/jobs/{id}/storyboard/beats/{beatId}/crop` | preview crop JPEG theo region hiện tại |
 | POST | `/api/jobs/{id}/storyboard/beats/reorder` | body `{beatId, to}` → sắp xếp lại |
 | GET | `/api/jobs/{id}/storyboard/working/{i}/image` | preview working image (ảnh band) |
@@ -179,7 +174,7 @@ Có thể tạo storyboard **ngay từ phase xem trước** (chưa chạy Stage 
 | GET | `/api/jobs/{id}/storyboard/export-bundle` | bundle.zip (config qua `?config=<json>`) |
 | POST | `/api/jobs/{id}/storyboard/export-bundle` | multipart `config` + file `bgm` → bundle.zip kèm BGM + audio đã synth (audio stale theo narration bị loại) |
 
-## Manifest (Stage 1 — hợp đồng cho TTS v1)
+## Manifest (nội bộ `.mtvproj` — không còn route export riêng)
 
 ```json
 {
@@ -188,14 +183,15 @@ Có thể tạo storyboard **ngay từ phase xem trước** (chưa chạy Stage 
   "createdAt": "ISO-8601",
   "itemCount": 3,
   "items": [
-    { "index": 0, "filename": "1.jpg", "content": { "description": "…", "dialogue": ["…"], "note": "" } }
+    { "index": 0, "filename": "band-1.jpg", "content": { "description": "…", "dialogue": ["…"], "note": "" } }
   ]
 }
 ```
 
-Item lỗi chưa retry: `"error": "…"` + `content: null`.
+Nằm trong `.mtvproj` (`manifest.json`) để round-trip Lưu/Mở project. `content` thường là `null`
+(vision chạy ở Storyboard, ghi vào working — không ghi ngược item); import cũ có content vẫn đọc được.
 
-## StoryboardManifest (Stage 1.5 — hợp đồng cho TTS/video)
+## StoryboardManifest (hợp đồng cho TTS/video)
 
 ```json
 {
@@ -246,7 +242,7 @@ Item lỗi chưa retry: `"error": "…"` + `content: null`.
 - `lib/source-kind.ts` — ngưỡng `STRIP_RATIO` cho nhánh downscale ảnh dải dọc.
 - `lib/stitch.ts` — nối các ảnh thành một canvas dọc (căn giữa slice hẹp).
 - `lib/smart-split.ts` — cắt band theo NGỮ CẢNH (kế thừa primitive safe-line của SmartStitch, jhin1m/manhwa-sticher): dò gutter (khoảng trắng dày) làm điểm cắt, bỏ qua khe hẹp nhân vật↔bong bóng, gộp band non nội dung.
-- `lib/narration.ts` — compose narration template từ content Stage 1; nhánh vision (Generate) crop vùng nhịp → describeImage; rev-guard per-beat.
+- `lib/narration.ts` — compose narration: nhánh vision (Generate all + Generate lẻ) crop vùng nhịp → describeImage → persist scene vào working (Kịch bản reuse); nhánh template từ content có sẵn (import); rev-guard per-beat.
 - `lib/storyboard-store.ts` — in-memory storyboard + working image + kịch bản Stage 2 (script + mutators gộp/tách/sửa + audio đã synth; Map per-jobId, sống sót HMR).
 
 **Stage 2 (kịch bản + video):**
@@ -260,13 +256,13 @@ Item lỗi chưa retry: `"error": "…"` + `content: null`.
 - `scripts/render-video.mts` — CLI render (nguồn chân lý): bundle → TTS (cache) → timeline → Ken Burns per shot → concat + BGM duck + burn → MP4 + .srt + timeline.json; `--dry-run` không gọi TTS/ffmpeg.
 
 **Routes & UI:**
-- `app/api/jobs/**` — route Stage 1 (POST/GET/PATCH/DELETE item/POST retry).
-- `app/api/jobs/{id}/storyboard**` — route Stage 1.5 (POST create / PATCH+DELETE beat / POST generate-retry-reorder / GET crop-export-stream-working).
+- `app/api/jobs/**` — route job (POST upload / GET / PATCH context / DELETE item / GET image).
+- `app/api/jobs/{id}/storyboard**` — route storyboard (POST create + generate-all / PATCH+DELETE beat / POST generate-retry-reorder / GET crop-stream-working).
 - `app/api/jobs/{id}/storyboard/script**`, `tts**`, `export-bundle` — route Stage 2 (kịch bản + TTS + bundle).
 - `app/api/project/export|import` — file project `.mtvproj` (lưu/mở cả phiên làm việc, `lib/project.ts`).
-- `app/layout.tsx` + `components/app-shell.tsx` — app shell chung (top bar Lưu/Mở project + stepper 4 bước + theme toggle + toast); token shadcn/ui trong `app/globals.css`.
-- `app/page.tsx` — UI Trích xuất: upload (gộp + chia band) → xem trước → [Chạy Stage 1 | Tạo storyboard] → progress → edit/export.
-- `app/storyboard/[jobId]/page.tsx` — UI storyboard master–detail: list nhịp (trái) + chi tiết nhịp (phải) với chọn vùng kéo-thả (`components/region-cropper.tsx`), Generate ✨ per-beat, reorder.
+- `app/layout.tsx` + `components/app-shell.tsx` — app shell chung (top bar Lưu/Mở project + stepper 3 bước Storyboard→Kịch bản→Video + theme toggle + toast); token shadcn/ui trong `app/globals.css`.
+- `app/page.tsx` — UI Nhận chapter: upload (gộp + chia band) → xem trước lưới band + xoá band + ngữ cảnh chương → Tạo storyboard.
+- `app/storyboard/[jobId]/page.tsx` — UI storyboard master–detail: Generate all (batch vision + RPM), list nhịp (trái) + chi tiết nhịp (phải) với chọn vùng kéo-thả (`components/region-cropper.tsx`), Generate ✨ per-beat, reorder.
 - `app/script/[jobId]/page.tsx` — trang Kịch bản AI: duyệt/gộp/tách/sửa/chốt → Dựng video.
 - `app/video/[jobId]/page.tsx` — Preview UI video: player Ken Burns CSS xấp xỉ + caption theo câu + panel khung hình/phụ đề/BGM/TTS → Synth audio → Export bundle.
 
@@ -290,7 +286,7 @@ npm run test:render   # dry-run + MP4 9:16 + 16:9 + BGM duck + cache HIT (không
 npm run mock:vision   # Mock OpenAI vision (port 3106)
 PORT=3105 OPENAI_API_KEY=mock-key OPENAI_BASE_URL=http://localhost:3106/v1 \
 VISION_MODEL=mock-vision VISION_RPM=600 SPLIT_HEIGHT=1000 npm run dev
-npm run test:e2e      # upload band/Stage 1/storyboard/Generate/reorder/xoá band+nhịp/lưu-mở project/PDF
+npm run test:e2e      # upload band/storyboard pending sạch/Generate all + lẻ/reorder/xoá band+nhịp/lưu-mở project/PDF/route cũ 404
 ```
 
 **E2E route Stage 2** (kịch bản + TTS + bundle qua server thật — thêm mock script :3108 + mock ElevenLabs :3107 và env `SCRIPT_*`/`ELEVENLABS_*` trỏ mock vào lệnh start ở trên):

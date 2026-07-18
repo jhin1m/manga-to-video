@@ -216,6 +216,18 @@ export function setWorking(jobId: string, working: WorkingImage[]): void {
   state.working = working;
 }
 
+// Ghi SceneContent do vision trả về vào working image của band — bước Kịch bản đọc lại
+// (`item.content ?? working.content`) nên vision không phải chạy lần hai cho band này.
+export function setWorkingContent(
+  jobId: string,
+  sourceIndex: number,
+  content: SceneContent,
+): void {
+  const working = store.get(jobId)?.working.find((w) => w.sourceIndex === sourceIndex);
+  if (!working) return;
+  working.content = content;
+}
+
 function requireBeatIndex(state: StoryboardState, beatId: string): number {
   const idx = state.beats.findIndex((b) => b.id === beatId);
   if (idx === -1) throw new Error('Không tìm thấy nhịp trong storyboard');

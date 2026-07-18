@@ -63,8 +63,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: message }, { status: 400 });
   }
 
-  // CHƯA gọi vision ở đây: job sinh ra ở phase 'ready' để client xem trước.
-  // Việc chạy vision (có rate limit) kích hoạt riêng qua POST /api/jobs/{id}/run.
+  // KHÔNG gọi vision ở đây: job sinh ra ở phase 'ready' và đứng yên đó để client xem trước.
+  // Vision (có rate limit) chạy ở Storyboard qua POST /api/jobs/{id}/storyboard/generate.
   const job = createJob(items);
   return NextResponse.json(toJobStatusDTO(job));
 }

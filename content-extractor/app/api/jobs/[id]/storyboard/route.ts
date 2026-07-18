@@ -28,6 +28,12 @@ async function buildAndCompose(jobId: string): Promise<void> {
   }));
   setWorking(jobId, working);
   setBeats(jobId, skeletonBeats(working.map((w) => ({ sourceIndex: w.sourceIndex }))));
+  // Chapter mới upload chưa có content — beats đứng ở pending sạch chờ "Generate all",
+  // compose template lúc này chỉ đẻ ra lỗi "Nội dung trống" hàng loạt.
+  if (!job.items.some((it) => it.content != null)) {
+    updateStoryboardProgress(jobId, { phase: 'done', currentIndex: null });
+    return;
+  }
   await composeStoryboard(jobId, { concurrency: 4 });
 }
 
