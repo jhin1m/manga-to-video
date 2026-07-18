@@ -109,6 +109,23 @@ console.log('Test 1b: khối ngữ cảnh chương trong prompt (vision + biên 
   ];
   const plain = buildPrompt(inputs);
   ok(!plain.includes('Ngữ cảnh chương'), 'biên kịch: không context → prompt y cũ');
+  ok(plain.includes('ngôi thứ ba'), 'biên kịch: prompt chốt lời kể ngôi thứ ba');
+  ok(plain.includes('KHÔNG nhập vai'), 'biên kịch: cấm nhập vai/xưng "tôi-ta" trong lời kể');
+  ok(
+    plain.includes('BÊN TRONG dấu ngoặc kép'),
+    'biên kịch: ngôi nhất/ngôi hai chỉ được nằm trong thoại trích dẫn',
+  );
+  const withNote = buildPrompt([
+    {
+      ...inputs[0],
+      content: { description: 'Cảnh mở đầu.', dialogue: [], note: 'Khung hồi tưởng quá khứ.' },
+    },
+  ]);
+  ok(
+    withNote.includes('Lưu ý: Khung hồi tưởng quá khứ.'),
+    'biên kịch: note của vision (tín hiệu mạch truyện) vào prompt',
+  );
+  ok(!plain.includes('Lưu ý:'), 'biên kịch: note rỗng → không chèn "Lưu ý:" thừa');
   const withCtx = buildPrompt(inputs, '  Lâm Phong — nam chính.  ');
   ok(
     withCtx.includes('Ngữ cảnh chương') && withCtx.includes('Lâm Phong — nam chính.'),
@@ -118,7 +135,15 @@ console.log('Test 1b: khối ngữ cảnh chương trong prompt (vision + biên 
     withCtx.indexOf('Ngữ cảnh chương') < withCtx.indexOf('Nội dung các khung:'),
     'biên kịch: khối context đứng trước danh sách khung',
   );
+  ok(
+    withCtx.includes('KHÔNG áp vào giọng người kể'),
+    'biên kịch: xưng hô context chỉ áp cho thoại, không lây sang giọng kể',
+  );
   eq(buildVisionPrompt(), buildVisionPrompt(''), 'vision: undefined và rỗng cho cùng prompt gốc');
+  ok(
+    buildVisionPrompt().includes('ngôi thứ ba'),
+    'vision: description ép ngôi thứ ba (chặn rò ngôi nhất từ trang độc thoại)',
+  );
   ok(!buildVisionPrompt('   ').includes('Ngữ cảnh chương'), 'vision: context toàn khoảng trắng → prompt gốc');
   const vp = buildVisionPrompt('Tô Nhược — nữ.');
   ok(

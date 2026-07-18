@@ -66,7 +66,16 @@ export interface ScriptBeatInput {
   motion?: MotionOverride; // ghi đè hiệu ứng của beat — copy 1 chiều, undefined = auto
 }
 
-const PROMPT_HEADER = `Bạn là biên kịch video recap truyện tranh. Dưới đây là nội dung từng khung hình theo thứ tự đọc (đánh số index từ 0). Nhiệm vụ:
+const PROMPT_HEADER = `Bạn là biên kịch kiêm người dẫn chuyện cho video recap truyện tranh — lời kể sẽ được đọc thuyết minh (voice-over) trên video. Dưới đây là nội dung từng khung hình theo thứ tự đọc (đánh số index từ 0).
+
+Trước khi viết: đọc TOÀN BỘ các khung để nắm mạch truyện (ai là ai, sự kiện nối nhau ra sao) rồi mới đặt bút — kể theo nhân quả, không chép máy móc mô tả từng khung.
+
+Ngôi kể — quy tắc CỨNG:
+- Lời kể LUÔN ở ngôi thứ ba, vai người kể chuyện đứng ngoài câu chuyện: gọi nhân vật bằng TÊN hoặc đại từ ngôi ba phù hợp (hắn, y, cô, nàng, cô ta, ông ta…).
+- KHÔNG nhập vai nhân vật: cấm dùng "tôi/ta/mình" làm chủ ngữ của lời kể, kể cả khi khung là độc thoại nội tâm — độc thoại phải chuyển thành lời kể gián tiếp ("hắn thầm nghĩ…") hoặc trích dẫn ngắn trong ngoặc kép.
+- Xưng hô ngôi nhất/ngôi hai (ta, ngươi, huynh, muội…) chỉ được nằm BÊN TRONG dấu ngoặc kép của thoại trích dẫn, giữ đúng cách các nhân vật xưng hô với nhau.
+
+Nhiệm vụ:
 - Viết lời kể tiếng Việt MẠCH LẠC, xâu chuỗi các khung thành một mạch truyện liền, thoại lồng vào lời kể dạng trích dẫn ngắn.
 - Được GỘP các khung liền kề vào MỘT đoạn kể khi chúng cùng một diễn biến.
 - Được TÁCH một khung dày nội dung thành NHIỀU đoạn kể liên tiếp.
@@ -82,13 +91,22 @@ export function buildPrompt(inputs: ScriptBeatInput[], context?: string): string
     const dialogue = inp.content?.dialogue?.length
       ? ` | Thoại: ${inp.content.dialogue.map((d) => `"${d}"`).join(' ')}`
       : '';
-    return `[${index}] ${desc}${dialogue}`;
+    // note của vision mang tín hiệu mạch truyện (chuyển cảnh, hồi tưởng, chi tiết nền) —
+    // vứt đi là biên kịch mất đúng thứ giúp hiểu kịch bản.
+    const note = inp.content?.note?.trim();
+    return `[${index}] ${desc}${dialogue}${note ? ` | Lưu ý: ${note}` : ''}`;
   });
   // Cùng khối ngữ cảnh với vision (một nguồn từ Job) — xưng hô trong LỜI KỂ chốt ở tầng
-  // biên kịch nên phải nhắc lại ở đây, không thể trông vào mô tả từng khung.
+  // biên kịch nên phải nhắc lại ở đây, không thể trông vào mô tả từng khung. Phải tách
+  // rõ hai tầng xưng hô: nhân vật↔nhân vật (trong thoại) ≠ người kể→nhân vật (ngôi ba),
+  // nếu không model áp "ta/ngươi/huynh/muội" của nhân vật vào giọng kể.
   const trimmed = context?.trim();
   const contextBlock = trimmed
-    ? `\n\nNgữ cảnh chương (nhân vật, xưng hô, bối cảnh — dùng để gọi tên và xưng hô nhất quán trong lời kể; không bịa thêm sự kiện ngoài các khung):\n${trimmed}`
+    ? `\n\nNgữ cảnh chương (nhân vật, xưng hô, bối cảnh — người dùng cung cấp):
+- Dùng để gọi ĐÚNG TÊN nhân vật trong lời kể và chọn đúng cách các nhân vật xưng hô với nhau TRONG THOẠI trích dẫn.
+- Xưng hô trong ngữ cảnh là cách nhân vật nói VỚI NHAU — KHÔNG áp vào giọng người kể (lời kể vẫn ngôi thứ ba, gọi nhân vật bằng tên/đại từ ngôi ba).
+- KHÔNG bịa thêm sự kiện ngoài nội dung các khung.
+${trimmed}`
     : '';
   return `${PROMPT_HEADER}${contextBlock}\n\nNội dung các khung:\n${lines.join('\n')}`;
 }
