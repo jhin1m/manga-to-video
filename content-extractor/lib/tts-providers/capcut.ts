@@ -1,5 +1,6 @@
-import { constants, createHash, publicEncrypt, randomBytes, randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { constants, createHash, publicEncrypt, randomBytes, randomInt, randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { withRetry } from '../vision';
 import { CAPCUT_VOICES, PROVIDER_LABELS } from './catalog';
 import type { TtsConfig, TtsProvider } from './types';
@@ -25,7 +26,11 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-// Device profile mặc định (từ repo nguồn). Override qua CAPCUT_DEVICE_JSON (path file JSON).
+// Device profile mặc định (từ repo nguồn) — chỉ là BASE cho các field app-level (aid, app version…).
+// Ba field định danh máy device_id/tdid/iid dưới đây KHÔNG dùng nguyên: chúng bị ByteDance Shark
+// risk-control chặn "shark block only" (ret=-6) vì cả cộng đồng xài chung một device. loadDevice()
+// thay chúng bằng identity ngẫu nhiên persist ở .cache/capcut-device.json. Override qua
+// CAPCUT_DEVICE_JSON (path file JSON) vẫn thắng tất cả.
 const DEFAULT_DEVICE: Record<string, string> = {
   aid: '359289',
   app_name: 'CapCut',
@@ -292,21 +297,76 @@ async function postJson(req: CapcutRequest): Promise<CapcutEnvelope> {
   }
   const data = (await res.json()) as CapcutEnvelope;
   if (data.ret !== '0') {
-    throw new Error(`CapCut API lỗi: ${data.errmsg || `ret=${data.ret}`}. ${HINT}`);
+    // ret!=0 là lỗi nghiệp vụ CapCut (vd ret=-6 "shark block only" khi device bị risk-control chặn),
+    // KHÔNG phải lỗi mạng → đánh dấu non-retryable để withRetry fail nhanh, không đập lại device đã chặn.
+    const err = new Error(`CapCut API lỗi: ${data.errmsg || `ret=${data.ret}`}. ${HINT}`) as Error & {
+      retryable: boolean;
+    };
+    err.retryable = false;
+    throw err;
   }
   return data;
 }
 
-async function loadDevice(): Promise<Record<string, string>> {
-  const overridePath = process.env.CAPCUT_DEVICE_JSON;
-  if (!overridePath) return { ...DEFAULT_DEVICE };
+// Nơi lưu device identity ngẫu nhiên (gitignored qua .cache/). Path tương đối CWD — dùng chung
+// giữa Preview UI (Next) và CLI render nên cùng máy chỉ có MỘT device ổn định.
+const DEVICE_STORE_PATH = path.join('.cache', 'capcut-device.json');
+
+// 19 chữ số, đầu 1..9 (không leading zero) — mô phỏng device_id/iid dạng snowflake ByteDance.
+function randomSnowflake(): string {
+  let rest = '';
+  for (let i = 0; i < 18; i++) rest += String(randomInt(0, 10));
+  return `${randomInt(1, 10)}${rest}`;
+}
+
+// Sinh identity máy mới: device_id == tdid (khớp mẫu DEFAULT_DEVICE), iid riêng.
+function newDeviceIdentity(): Record<string, string> {
+  const deviceId = randomSnowflake();
+  return { device_id: deviceId, tdid: deviceId, iid: randomSnowflake() };
+}
+
+// Đọc identity đã persist; nếu chưa có/hỏng thì sinh mới + ghi atomic (.tmp → rename) chống corrupt
+// khi ghi song song. Chỉ persist 3 field định danh máy — phần còn lại lấy từ DEFAULT_DEVICE.
+async function loadOrCreatePersistedDevice(): Promise<Record<string, string>> {
   try {
-    const raw = JSON.parse(await readFile(overridePath, 'utf8')) as Record<string, string>;
-    return { ...DEFAULT_DEVICE, ...raw };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`Không đọc được CAPCUT_DEVICE_JSON (${overridePath}): ${msg}`);
+    const raw = JSON.parse(await readFile(DEVICE_STORE_PATH, 'utf8')) as Record<string, string>;
+    if (raw.device_id) return { ...DEFAULT_DEVICE, ...raw };
+  } catch {
+    // chưa tồn tại hoặc JSON hỏng → tạo mới bên dưới
   }
+  const identity = newDeviceIdentity();
+  await mkdir(path.dirname(DEVICE_STORE_PATH), { recursive: true });
+  const tmp = `${DEVICE_STORE_PATH}.${randomUUID()}.tmp`;
+  await writeFile(tmp, JSON.stringify(identity, null, 2), 'utf8');
+  await rename(tmp, DEVICE_STORE_PATH);
+  return { ...DEFAULT_DEVICE, ...identity };
+}
+
+async function resolveDevice(): Promise<Record<string, string>> {
+  const overridePath = process.env.CAPCUT_DEVICE_JSON;
+  if (overridePath) {
+    try {
+      const raw = JSON.parse(await readFile(overridePath, 'utf8')) as Record<string, string>;
+      return { ...DEFAULT_DEVICE, ...raw };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Không đọc được CAPCUT_DEVICE_JSON (${overridePath}): ${msg}`);
+    }
+  }
+  return loadOrCreatePersistedDevice();
+}
+
+// Memo hóa: resolve device MỘT lần/process (tránh đọc/ghi file mỗi segment và tránh race). Không
+// cache lỗi để lần sau còn thử lại.
+let devicePromise: Promise<Record<string, string>> | null = null;
+function loadDevice(): Promise<Record<string, string>> {
+  if (!devicePromise) {
+    devicePromise = resolveDevice().catch((err) => {
+      devicePromise = null;
+      throw err;
+    });
+  }
+  return devicePromise;
 }
 
 async function pollAudioUrl(

@@ -91,6 +91,10 @@ function statusOf(err: unknown): number | undefined {
 }
 
 function isRetryable(err: unknown): boolean {
+  // Lỗi tự đánh dấu non-retryable (vd CapCut ret!=0 "shark block only") → không retry mù.
+  if (err && typeof err === 'object' && (err as { retryable?: boolean }).retryable === false) {
+    return false;
+  }
   const s = statusOf(err);
   if (s === 429) return true;
   if (s !== undefined && s >= 500) return true;
