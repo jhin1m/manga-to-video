@@ -7,7 +7,7 @@ effort: "3-4d"
 tags: [python-port, skill, parity]
 created: 2026-07-19
 blockedBy: []
-blocks: []
+blocks: [260719-2235-series-memory-bible-recap]
 ---
 
 # Port manga-to-video engine sang Python skill tự chứa
