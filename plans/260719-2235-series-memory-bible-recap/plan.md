@@ -1,7 +1,7 @@
 ---
 title: "Series-memory bible + recap xuyên chương"
 description: "Lớp series bên trên lớp chapter: bible tích lũy + recap per-chapter trong <series>/.mtv/, Python skill tự nối context giữa các chương, TS app tích hợp Mức 1 (nạp/xuất file)"
-status: pending
+status: done
 priority: P1
 effort: "1.5d"
 tags: [series-memory, skill, context]
@@ -51,8 +51,8 @@ MangaX/
 | # | Phase | Status |
 |---|-------|--------|
 | 1 | [Series contract + SKILL.md workflow (Python skill)](./phase-01-start.md) | ✅ Done |
-| 2 | [TS app Mức 1: nạp series context + xuất recap](./phase-02-ts-app-muc1-nap-context-xuat-recap.md) | Code done — 2 criteria UI nghiệm thu ở Phase 3 |
-| 3 | [Pilot 3 chương liên tiếp + nghiệm thu](./phase-03-pilot-3-chuong-nghiem-thu.md) | 5/6 criteria PASS — còn TS round-trip |
+| 2 | [TS app Mức 1: nạp series context + xuất recap](./phase-02-ts-app-muc1-nap-context-xuat-recap.md) | ✅ Done (UI round-trip: user waive) |
+| 3 | [Pilot 3 chương liên tiếp + nghiệm thu](./phase-03-pilot-3-chuong-nghiem-thu.md) | ✅ Done — 5/6 PASS, criterion 6 user waive |
 
 Phase 1 và 2 độc lập (khác engine, chỉ chung format file) — làm song song được. Phase 3 cần cả hai.
 
@@ -97,5 +97,6 @@ Phase 1 và 2 độc lập (khác engine, chỉ chung format file) — làm song
 - **5/6 criteria PASS** (nhất quán xưng hô, nối mạch, regression, bible cap, stale-check); pending: TS round-trip.
 - Vision pivot: subagent sonnet → z.ai glm-4.5v theo chỉ đạo user (memory `vision-stage-zai-not-subagent`); follow-up đề xuất đưa vision.py vào skill.
 - Report: `plans/reports/pilot-260720-0239-series-memory-3-chapters-report.md`.
+- **Đóng plan (2026-07-20 05:15, quyết định user)**: criterion 6 (TS app round-trip UI) được user chấp nhận BỎ QUA — không nghiệm thu, không tính PASS. Code phase 2 đã qua unit/lint/build/e2e + code-review; test tay UI để khi dùng thực tế. Plan status → done.
 
 <!-- slug: series-memory-bible-recap -->

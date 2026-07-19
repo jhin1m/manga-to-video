@@ -1,7 +1,7 @@
 ---
 phase: 2
 title: "TS app Mức 1: nạp series context + xuất recap"
-status: in-progress
+status: completed
 priority: P2
 effort: "0.5d"
 dependencies: []
@@ -46,8 +46,8 @@ script để user tự đặt vào `.mtv/summaries/`. Dùng chung format với P
 
 ## Success Criteria
 
-- [ ] Nạp 3 file (bible + 2 summary) → context ghép đúng thứ tự, PATCH lưu, reload hiện lại. *(code xong + PATCH ngay khi nạp — nghiệm thu tay trong Phase 3 bước 7)*
-- [ ] Xuất recap từ job pilot → file .md đúng format, ≤250 từ. *(nghiệm thu trong Phase 3 bước 7)*
+- [ ] Nạp 3 file (bible + 2 summary) → context ghép đúng thứ tự, PATCH lưu, reload hiện lại. *(code xong; nghiệm thu tay UI: user waive 2026-07-20 — kiểm khi dùng thực tế)*
+- [ ] Xuất recap từ job pilot → file .md đúng format, ≤250 từ. *(user waive 2026-07-20 — như trên)*
 - [x] `pnpm test:unit` + `lint` + `build` sạch; không đổi hành vi khi không dùng 2 nút. *(5× ALL_PASS + e2e-storyboard E2E_ALL_PASS, 2026-07-19)*
 
 ## Risk Assessment

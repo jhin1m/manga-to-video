@@ -1,7 +1,7 @@
 ---
 phase: 3
 title: "Pilot 3 chương liên tiếp + nghiệm thu"
-status: in-progress
+status: completed
 priority: P1
 effort: "0.5d"
 dependencies: [1, 2]
@@ -49,7 +49,7 @@ Chạy skill lần lượt 3 chương → kiểm tra `.mtv/` sau mỗi lần.
 
 ## Success Criteria
 
-- [ ] 6 success criteria trong plan.md đều PASS, có bằng chứng trong report. *(2026-07-20: **5/6 PASS**, còn TS round-trip pending — xem `plans/reports/pilot-260720-0239-series-memory-3-chapters-report.md`. Corpus thực tế: "Standard of Reincarnation" 3 chương, không phải "Vừa Gả..." như dự kiến.)*
+- [x] 6 success criteria trong plan.md: **5/6 PASS**, criterion 6 (TS round-trip) **user waive** 2026-07-20 — xem `plans/reports/pilot-260720-0239-series-memory-3-chapters-report.md`. Corpus thực tế: "Standard of Reincarnation" 3 chương.
 - [x] Không phải sửa bible tay giữa chừng để giữ nhất quán. *(bible chỉ diff-update theo quy trình; validator bắt 2 lần recap over-cap → gọt — đúng cơ chế)*
 
 ## Risk Assessment
