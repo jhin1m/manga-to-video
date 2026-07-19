@@ -52,7 +52,7 @@ MangaX/
 |---|-------|--------|
 | 1 | [Series contract + SKILL.md workflow (Python skill)](./phase-01-start.md) | ✅ Done |
 | 2 | [TS app Mức 1: nạp series context + xuất recap](./phase-02-ts-app-muc1-nap-context-xuat-recap.md) | Code done — 2 criteria UI nghiệm thu ở Phase 3 |
-| 3 | [Pilot 3 chương liên tiếp + nghiệm thu](./phase-03-pilot-3-chuong-nghiem-thu.md) | Pending — CHỜ corpus 3 chương liên tiếp |
+| 3 | [Pilot 3 chương liên tiếp + nghiệm thu](./phase-03-pilot-3-chuong-nghiem-thu.md) | 5/6 criteria PASS — còn TS round-trip |
 
 Phase 1 và 2 độc lập (khác engine, chỉ chung format file) — làm song song được. Phase 3 cần cả hai.
 
@@ -91,5 +91,11 @@ Phase 1 và 2 độc lập (khác engine, chỉ chung format file) — làm song
   - **Fixed M3**: trần context 4000 → 16000 ký tự (route + textarea) — bible 2000 từ mới chứa vừa; comment chiều cắt sửa đúng (đuôi = recap mới nhất).
   - **Rejected M1** (gate nút xuất theo script): Home không có state script, route đã 404 message rõ — ghi deviation vào phase-02.
   - **Doc L1**: series.md ghi chú recap TS xuất không có header. L2/L3 accepted (warning thô, tool nội bộ).
+
+### Session 2 (2026-07-20) — Phase 3 pilot chạy thật
+- Corpus "Standard of Reincarnation" 3 chương (264 slice) → 3 video 16:9 hoàn chỉnh (339s/248s/244s + SRT).
+- **5/6 criteria PASS** (nhất quán xưng hô, nối mạch, regression, bible cap, stale-check); pending: TS round-trip.
+- Vision pivot: subagent sonnet → z.ai glm-4.5v theo chỉ đạo user (memory `vision-stage-zai-not-subagent`); follow-up đề xuất đưa vision.py vào skill.
+- Report: `plans/reports/pilot-260720-0239-series-memory-3-chapters-report.md`.
 
 <!-- slug: series-memory-bible-recap -->
