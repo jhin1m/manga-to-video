@@ -1,7 +1,7 @@
 ---
 phase: 1
 title: "Series contract + SKILL.md workflow (Python skill)"
-status: pending
+status: completed
 priority: P1
 effort: "0.5d"
 dependencies: []
@@ -61,9 +61,9 @@ agent làm; phần cơ học chỉ thêm validate cho `series.json`.
 
 ## Success Criteria
 
-- [ ] `validate.py --series` pass/fail đúng trên fixture (schema sai, summary thiếu, bible quá cap).
-- [ ] SKILL.md mô tả đủ: detect series, nạp context 2 recap + bible, sinh recap, diff-update, stale warning.
-- [ ] Mode chương đơn (không `.mtv/`) không đổi một chữ nào trong hành vi scripts.
+- [x] `validate.py --series` pass/fail đúng trên fixture (schema sai, summary thiếu, bible quá cap).
+- [x] SKILL.md mô tả đủ: detect series, nạp context 2 recap + bible, sinh recap, diff-update, stale warning.
+- [x] Mode chương đơn (không `.mtv/`) không đổi một chữ nào trong hành vi scripts.
 
 ## Risk Assessment
 

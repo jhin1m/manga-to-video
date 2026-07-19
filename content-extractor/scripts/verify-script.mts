@@ -17,7 +17,7 @@ import {
   SCRIPT_VERSION,
   toScriptManifest,
 } from '../lib/schema';
-import { buildPrompt, generateScript, toScriptSegments } from '../lib/script';
+import { buildPrompt, buildRecapPrompt, generateScript, toScriptSegments } from '../lib/script';
 import { buildVisionPrompt } from '../lib/vision';
 import {
   allocateCaptions,
@@ -150,6 +150,27 @@ console.log('Test 1b: khối ngữ cảnh chương trong prompt (vision + biên 
     vp.includes('Tô Nhược — nữ.') && vp.includes('KHÔNG mô tả'),
     'vision: context kèm guardrail chống context-bleed',
   );
+}
+
+console.log('Test 1c: buildRecapPrompt — recap series-memory từ script');
+{
+  const segs = [
+    seg({ id: 's1', order: 1, narration: 'Nàng bước vào phủ.' }),
+    seg({ id: 's0', order: 0, narration: 'Vân Chi tỉnh lại.' }),
+    seg({ id: 's2', order: 2, narration: '   ' }),
+  ];
+  const p = buildRecapPrompt(segs);
+  ok(
+    p.indexOf('Vân Chi tỉnh lại.') < p.indexOf('Nàng bước vào phủ.'),
+    'recap: narration ghép theo order, không theo thứ tự mảng',
+  );
+  ok(
+    p.includes('Vân Chi tỉnh lại.\nNàng bước vào phủ.'),
+    'recap: narration rỗng bị loại, các dòng còn lại liền nhau',
+  );
+  ok(p.includes('250 từ'), 'recap: cap 250 từ nằm trong prompt');
+  ok(p.includes('"Kết chương: "'), 'recap: yêu cầu dòng chốt "Kết chương:" (khớp format series.md)');
+  ok(p.includes('ngôi thứ ba'), 'recap: giữ lời kể ngôi ba');
 }
 
 console.log('Test 2: generateScript qua mock model (fence ```json + index ngoài biên)');

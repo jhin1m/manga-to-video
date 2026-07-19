@@ -3,7 +3,7 @@
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { Sparkles, Upload, X } from 'lucide-react';
+import { Download, FolderInput, Sparkles, Upload, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
@@ -35,6 +35,8 @@ export default function Home() {
   const [context, setContext] = useState(''); // ngữ cảnh chương — tiêm vào vision + biên kịch
   const savedContext = useRef(''); // bản đã PATCH lên server — chỉ gửi lại khi có thay đổi
   const [sbBusy, setSbBusy] = useState(false);
+  const seriesInput = useRef<HTMLInputElement>(null); // file picker bible/summaries (series-memory)
+  const [recapBusy, setRecapBusy] = useState(false);
 
   // Chọn/thả file là đi thẳng vào xem trước: upload ngay, không có bước bấm nút trung gian.
   // Server tự natural-sort theo tên file nên client khỏi gom/sắp trước. Dedupe theo tên để
@@ -95,6 +97,68 @@ export default function Home() {
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Không lưu được ngữ cảnh chương');
       return false;
+    }
+  }
+
+  // Nạp bible.md + summaries từ series folder (.mtv/) vào ngữ cảnh chương. App không biết
+  // path trên đĩa (ingest qua upload) nên user tự chọn file; bible lên đầu, còn lại
+  // natural-sort theo tên — khớp thứ tự chương. PATCH ngay với giá trị vừa ghép (không chờ
+  // onBlur — file picker không làm textarea blur, reload trước khi lưu là mất).
+  async function importSeriesContext(files: FileList | null) {
+    if (!files || files.length === 0 || !jobId) return;
+    const list = Array.from(files).sort((a, b) => {
+      const bibleFirst = Number(!/bible/i.test(a.name)) - Number(!/bible/i.test(b.name));
+      return (
+        bibleFirst || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+      );
+    });
+    const texts = await Promise.all(list.map((f) => f.text()));
+    let joined = texts
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .join('\n\n');
+    if (joined.length > 16000) {
+      // Trần khớp MAX_CONTEXT_LENGTH của PATCH route. Phần đuôi bị cắt là recap MỚI NHẤT
+      // (bible đứng đầu, recap sort tăng dần) — vượt trần nghĩa là bible đã phình quá cap
+      // 2000 từ của skill, phải gọt bible chứ đừng dựa vào cắt ở đây.
+      joined = joined.slice(0, 16000);
+      toast.warning('Ngữ cảnh vượt 16000 ký tự — đã cắt phần cuối (recap mới nhất), hãy gọt bible');
+    }
+    setContext(joined);
+    try {
+      const dto = await fetchJSON<JobStatusDTO>(`/api/jobs/${jobId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ context: joined }),
+      });
+      savedContext.current = dto.context;
+      toast.success(`Đã nạp ${list.length} file vào ngữ cảnh chương`);
+    } catch (err) {
+      // Giữ nguyên state local để user không mất nội dung — lưu lại qua onBlur/Tạo storyboard.
+      toast.error(err instanceof Error ? err.message : 'Nạp xong nhưng chưa lưu được lên server');
+    }
+  }
+
+  // Xuất recap chương (series-memory): server tóm script đã có → tải về .md để user tự
+  // đặt vào <series>/.mtv/summaries/. Chưa có script → route trả lỗi rõ, chỉ toast.
+  async function exportRecap() {
+    if (!jobId) return;
+    setRecapBusy(true);
+    try {
+      const { recap } = await fetchJSON<{ recap: string }>(
+        `/api/jobs/${jobId}/storyboard/recap`,
+        { method: 'POST' },
+      );
+      const url = URL.createObjectURL(new Blob([recap], { type: 'text/markdown' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'chapter-recap.md';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Không xuất được recap');
+    } finally {
+      setRecapBusy(false);
     }
   }
 
@@ -242,11 +306,40 @@ export default function Home() {
                   onChange={(e) => setContext(e.target.value)}
                   onBlur={() => void saveContext(jobId)}
                   rows={3}
-                  maxLength={4000}
+                  maxLength={16000}
                   placeholder="Ví dụ: Lâm Phong — nam chính, đệ tử ngoại môn. Tô Nhược — nữ, sư tỷ của Lâm Phong. Bối cảnh: tông môn tu tiên."
                   className="mt-1"
                 />
               </label>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <input
+                  ref={seriesInput}
+                  type="file"
+                  accept=".md,.txt"
+                  multiple
+                  hidden
+                  onChange={(e) => {
+                    void importSeriesContext(e.target.files);
+                    e.target.value = ''; // cho phép chọn lại cùng bộ file
+                  }}
+                />
+                <Button variant="outline" size="sm" onClick={() => seriesInput.current?.click()}>
+                  <FolderInput data-icon="inline-start" />
+                  Nạp series context
+                </Button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button variant="outline" size="sm" onClick={exportRecap} disabled={recapBusy}>
+                      <Download data-icon="inline-start" />
+                      {recapBusy ? 'Đang tóm…' : 'Xuất recap chương'}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    Tóm kịch bản đã tạo thành recap ≤250 từ — tải về đặt vào
+                    &lt;series&gt;/.mtv/summaries/
+                  </TooltipContent>
+                </Tooltip>
+              </div>
             </CardContent>
           </Card>
 

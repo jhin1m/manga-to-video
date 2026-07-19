@@ -50,9 +50,9 @@ MangaX/
 
 | # | Phase | Status |
 |---|-------|--------|
-| 1 | [Series contract + SKILL.md workflow (Python skill)](./phase-01-start.md) | Pending |
-| 2 | [TS app Mức 1: nạp series context + xuất recap](./phase-02-ts-app-muc1-nap-context-xuat-recap.md) | Pending |
-| 3 | [Pilot 3 chương liên tiếp + nghiệm thu](./phase-03-pilot-3-chuong-nghiem-thu.md) | Pending |
+| 1 | [Series contract + SKILL.md workflow (Python skill)](./phase-01-start.md) | ✅ Done |
+| 2 | [TS app Mức 1: nạp series context + xuất recap](./phase-02-ts-app-muc1-nap-context-xuat-recap.md) | Code done — 2 criteria UI nghiệm thu ở Phase 3 |
+| 3 | [Pilot 3 chương liên tiếp + nghiệm thu](./phase-03-pilot-3-chuong-nghiem-thu.md) | Pending — CHỜ corpus 3 chương liên tiếp |
 
 Phase 1 và 2 độc lập (khác engine, chỉ chung format file) — làm song song được. Phase 3 cần cả hai.
 
@@ -79,5 +79,17 @@ Phase 1 và 2 độc lập (khác engine, chỉ chung format file) — làm song
 - Plan port (dependency, done): `plans/260719-2024-port-manga-to-video-engine-sang-python-skill-tu-chua/`
 - Cơ chế context TS sẵn có: `plans/260718-1746-chapter-context-vision/` (done)
 - Code-review port (ràng buộc render/banding): `plans/reports/from-code-reviewer-260719-manga-to-video-python-port-review.md`
+
+## Validation Log
+
+### Session 1 (2026-07-19) — Phase 1 + 2 implemented
+- Skill: smoke validate 16/16 PASS (5 case series mới); mode chương đơn không đổi hành vi.
+- TS: test:unit 5× ALL_PASS, lint sạch, build pass (route recap có mặt), e2e-storyboard E2E_ALL_PASS.
+- Code-review 7/10 (report: `plans/reports/from-code-reviewer-260719-series-memory-phase12-review.md`):
+  - **Fixed H1**: generateRecap bị `createCompletion` ép json_object → thêm param `jsonMode=false` (vision.ts additive, backward-compatible).
+  - **Fixed M2**: nạp series context giờ PATCH ngay (không chờ onBlur — reload không mất).
+  - **Fixed M3**: trần context 4000 → 16000 ký tự (route + textarea) — bible 2000 từ mới chứa vừa; comment chiều cắt sửa đúng (đuôi = recap mới nhất).
+  - **Rejected M1** (gate nút xuất theo script): Home không có state script, route đã 404 message rõ — ghi deviation vào phase-02.
+  - **Doc L1**: series.md ghi chú recap TS xuất không có header. L2/L3 accepted (warning thô, tool nội bộ).
 
 <!-- slug: series-memory-bible-recap -->

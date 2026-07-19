@@ -251,3 +251,52 @@ export async function generateScript(
   }
   return toScriptSegments(parseScriptJSON(res.choices[0]?.message?.content), inputs);
 }
+
+// ==== Recap chương cho series-memory ====
+// App không biết folder series trên đĩa (ingest qua upload) — user tải recap về tự đặt vào
+// <series>/.mtv/summaries/. Format phải khớp hợp đồng của skill manga-to-video
+// (references/series.md): ≤250 từ, ngôi ba, thuật nhân quả, chốt bằng dòng "Kết chương: ...".
+
+export function buildRecapPrompt(segments: ScriptSegment[]): string {
+  const story = [...segments]
+    .sort((a, b) => a.order - b.order)
+    .map((s) => s.narration.trim())
+    .filter(Boolean)
+    .join('\n');
+  return `Bạn là người tóm tắt cho video recap truyện tranh. Dưới đây là toàn bộ lời kể (voice-over) của MỘT chương, theo thứ tự.
+
+Nhiệm vụ: viết recap diễn biến chương này để làm ngữ cảnh cho chương sau.
+- Tối đa 250 từ, tiếng Việt, lời kể ngôi thứ ba, gọi nhân vật đúng tên như trong lời kể.
+- Thuật theo nhân quả (ai làm gì → dẫn tới gì), 3-6 câu, đủ để người chưa đọc chương nắm mạch.
+- Không bình luận, không suy đoán chương sau.
+- Kết thúc bằng đúng một dòng bắt đầu bằng "Kết chương: " nêu tình huống đang treo.
+Trả về DUY NHẤT phần recap dạng văn bản thuần (không markdown fence, không lời dẫn).
+
+Lời kể của chương:
+${story}`;
+}
+
+// Throw khi chưa có kịch bản/model hỏng — route trả lỗi rõ cho client.
+export async function generateRecap(segments: ScriptSegment[]): Promise<string> {
+  if (segments.length === 0) {
+    throw new Error('Chưa có đoạn kịch bản nào để tóm tắt');
+  }
+  const config = readScriptConfig();
+  const client = new OpenAI({
+    apiKey: config.apiKey,
+    baseURL: config.baseURL,
+    maxRetries: 0, // tự quản lý retry bằng withRetry
+  });
+  const messages: ChatCompletionMessageParam[] = [
+    { role: 'user', content: buildRecapPrompt(segments) },
+  ];
+  // jsonMode=false — recap là văn bản thuần; ép json_object làm model trả JSON sai format.
+  const res = await withRetry(() =>
+    createCompletion(client, config.model, messages, config.disableThinking, false),
+  );
+  const recap = res.choices[0]?.message?.content?.trim();
+  if (!recap) {
+    throw new Error('Model không trả về recap — thử lại');
+  }
+  return recap;
+}

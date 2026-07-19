@@ -1,7 +1,7 @@
 ---
 phase: 2
 title: "TS app Mức 1: nạp series context + xuất recap"
-status: pending
+status: in-progress
 priority: P2
 effort: "0.5d"
 dependencies: []
@@ -41,16 +41,16 @@ script để user tự đặt vào `.mtv/summaries/`. Dùng chung format với P
 
 1. `lib/script.ts`: viết `buildRecapPrompt` + `generateRecap` (KHÔNG đụng `generateScript`/`buildPrompt`).
 2. Route `recap/route.ts`: đọc job (script phải đã có, lỗi rõ nếu chưa), gọi generateRecap, trả `text/markdown`.
-3. `page.tsx`: nút nạp (FileReader, ghép, set context) + nút xuất (fetch route, tải blob). Chỉ hiện nút xuất khi đã có script.
+3. `page.tsx`: nút nạp (đọc file, ghép, set context + PATCH ngay) + nút xuất (fetch route, tải blob). Nút xuất luôn hiện — trang Home không có state script (script sinh ở trang Storyboard), gate cần thêm 1 GET vô ích; chưa có script thì route trả 404 với message rõ → toast.
 4. `verify-script.mts` case mới; chạy `pnpm test:unit && pnpm lint && pnpm build` (nhớ `nvm use 24`).
 
 ## Success Criteria
 
-- [ ] Nạp 3 file (bible + 2 summary) → context ghép đúng thứ tự, PATCH lưu, reload hiện lại.
-- [ ] Xuất recap từ job pilot → file .md đúng format, ≤250 từ.
-- [ ] `pnpm test:unit` + `lint` + `build` sạch; không đổi hành vi khi không dùng 2 nút.
+- [ ] Nạp 3 file (bible + 2 summary) → context ghép đúng thứ tự, PATCH lưu, reload hiện lại. *(code xong + PATCH ngay khi nạp — nghiệm thu tay trong Phase 3 bước 7)*
+- [ ] Xuất recap từ job pilot → file .md đúng format, ≤250 từ. *(nghiệm thu trong Phase 3 bước 7)*
+- [x] `pnpm test:unit` + `lint` + `build` sạch; không đổi hành vi khi không dùng 2 nút. *(5× ALL_PASS + e2e-storyboard E2E_ALL_PASS, 2026-07-19)*
 
 ## Risk Assessment
 
-- Ghép file vượt cap context của PATCH → cắt + toast cảnh báo cho user (cap là hành vi sẵn có, không nới).
+- Ghép file vượt cap context của PATCH → cắt + toast cảnh báo. Cap nới 4000 → 16000 ký tự (cả route lẫn textarea) vì bible cap 2000 từ ≈ 10-12k ký tự tiếng Việt — trần cũ chứa không nổi series context (finding M3 code-review).
 - Recap chất lượng kém do prompt → verify bằng đối chiếu tay ở Phase 3, chỉnh prompt tại một chỗ (`buildRecapPrompt`).

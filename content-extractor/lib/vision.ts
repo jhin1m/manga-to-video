@@ -120,17 +120,19 @@ export async function withRetry<T>(fn: () => Promise<T>, tries = 4): Promise<T> 
 
 // Gọi chat.completions với json-mode adaptive + tắt thinking — dùng chung cho vision và
 // script (biên kịch). Cờ jsonModeSupported process-wide: endpoint từ chối json-mode một lần
-// thì thôi luôn (mất tối ưu, không mất đúng đắn).
+// thì thôi luôn (mất tối ưu, không mất đúng đắn). jsonMode=false cho output văn bản thuần
+// (vd recap) — ép json_object ở đó làm model trả JSON dù prompt đòi plain text.
 export async function createCompletion(
   client: OpenAI,
   model: string,
   messages: ChatCompletionMessageParam[],
   disableThinking: boolean,
+  jsonMode = true,
 ): Promise<ChatCompletion> {
   // Với model reasoning của z.ai (GLM), tắt "thinking" giảm ~50% token cho tác vụ đọc
   // ảnh vốn không cần suy luận sâu. Param ngoài chuẩn OpenAI nên cast qua base type.
   const extra = disableThinking ? { thinking: { type: 'disabled' } } : {};
-  if (jsonModeSupported) {
+  if (jsonModeSupported && jsonMode) {
     try {
       return await client.chat.completions.create({
         model,

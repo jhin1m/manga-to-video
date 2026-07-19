@@ -3,8 +3,9 @@ import { getJob, setJobContext, toJobStatusDTO } from '@/lib/jobs';
 
 export const runtime = 'nodejs';
 
-// Trần độ dài ngữ cảnh chương — đủ cho danh sách nhân vật + tóm tắt, chặn payload vô lý.
-const MAX_CONTEXT_LENGTH = 4000;
+// Trần độ dài ngữ cảnh chương — phải chứa vừa series context nạp từ file: bible cap 2000 từ
+// (~10-12k ký tự tiếng Việt) + 2 recap ~500 từ + lề. Chỉ chặn payload vô lý.
+const MAX_CONTEXT_LENGTH = 16000;
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
