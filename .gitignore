@@ -1,1 +1,10 @@
 .DS_Store
+
+# Parity harness: artifacts ảnh dựng lại được bằng dump-cuts.mts — không commit binary lớn
+tools/parity-port/baseline/stitched.png
+tools/parity-port/baseline/downscaled/
+
+# Baseline render tham chiếu — dựng lại được bằng pipeline, không commit binary
+content-extractor/output-16x9.mp4
+content-extractor/output-16x9.srt
+content-extractor/output-16x9.timeline.json
