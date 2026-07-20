@@ -17,6 +17,22 @@ export interface KenburnsFrameStyle {
   imgTransformStyle: CSSProperties;
 }
 
+// Vị trí pan tại tiến độ q, tính theo TỈ LỆ của toàn bộ phần dư — vì `(100cqh - 100%)`
+// trong transform chính là phần dư đó (âm), đo bằng đơn vị container.
+//
+// ffmpeg KHÔNG lia hết phần dư: nó chạy travelPx (đã bị MAX_PAN_FRAME_PER_SEC kẹp) và
+// khởi điểm từ basePx (căn giữa quãng còn lại), nên preview chạy trọn phần dư sẽ quét xa
+// hơn video thật — với slice 720×2240 trong khung 16:9 là gấp 4.6×. travelFull suy ngược
+// từ chính plan (2×basePx + travelPx) nên không cần biết kích thước khung; sai số ≤1px do
+// làm tròn, vô hình ở preview.
+function panOffsetRatio(plan: KenburnsPlan, q: number): string {
+  const base = plan.basePx ?? 0;
+  const travel = plan.travelPx ?? 0;
+  const travelFull = 2 * base + travel;
+  const ratio = travelFull > 0 ? (base + travel * q) / travelFull : 0;
+  return ratio.toFixed(4);
+}
+
 // Style khung hình tại tiến độ p ∈ [0,1] của shot. zoom = hệ số zoom đích (mode 'zoom').
 export function kenburnsFrameStyle(
   plan: KenburnsPlan,
@@ -27,16 +43,20 @@ export function kenburnsFrameStyle(
   // (Z-(Z-1)p ≡ 1+(Z-1)(1-p)).
   const q = plan.reverse ? 1 - p : p;
   if (plan.mode === 'pan-v') {
-    // Ảnh phủ bề rộng khung; chạy dọc từ đầu tới cuối phần dư.
+    // Ảnh phủ bề rộng khung; chạy dọc theo ĐÚNG quãng ffmpeg lia (xem panOffsetRatio).
     return {
       fgStyle: { width: '100%', height: 'auto' },
-      imgTransformStyle: { transform: `translateY(calc((100cqh - 100%) * ${q.toFixed(4)}))` },
+      imgTransformStyle: {
+        transform: `translateY(calc((100cqh - 100%) * ${panOffsetRatio(plan, q)}))`,
+      },
     };
   }
   if (plan.mode === 'pan-h') {
     return {
       fgStyle: { height: '100%', width: 'auto', maxWidth: 'none' },
-      imgTransformStyle: { transform: `translateX(calc((100cqw - 100%) * ${q.toFixed(4)}))` },
+      imgTransformStyle: {
+        transform: `translateX(calc((100cqw - 100%) * ${panOffsetRatio(plan, q)}))`,
+      },
     };
   }
   if (plan.mode === 'static') {

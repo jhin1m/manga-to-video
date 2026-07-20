@@ -23,6 +23,9 @@ CASES = [
     ("pan-v forced reverse", {"img_w": 720, "img_h": 2100, "region": None, "aspect": "9:16", "duration_sec": 4.0, "fps": 30, "zoom": 1.12, "motion": {"mode": "pan-v", "reverse": True}}),
     ("dur clamp 0.05", {"img_w": 720, "img_h": 720, "region": None, "aspect": "1:1", "duration_sec": 0.05, "fps": 30, "zoom": 1.12}),
     ("region crop pan-v", {"img_w": 720, "img_h": 3000, "region": {"x": 10, "y": 200, "w": 700, "h": 2500}, "aspect": "9:16", "duration_sec": 6.789, "fps": 30, "zoom": 1.12}),
+    # Slice manhwa thật trong khung ngang: trung vị + cực đoan của corpus 720px.
+    ("tall median 16:9", {"img_w": 720, "img_h": 1418, "region": None, "aspect": "16:9", "duration_sec": 2.5, "fps": 30, "zoom": 1.12}),
+    ("tall extreme 16:9", {"img_w": 720, "img_h": 2240, "region": None, "aspect": "16:9", "duration_sec": 2.82, "fps": 30, "zoom": 1.12}),
 ]
 
 for label, input in CASES:
