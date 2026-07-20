@@ -316,6 +316,15 @@ export default function VideoPreviewPage() {
     });
     ({ fgStyle, imgTransformStyle } = kenburnsFrameStyle(plan, p, config.kenburns.zoom));
   }
+  // Shot có region → xin route ảnh cắt sẵn, để <img> có intrinsic size ĐÚNG BẰNG region.
+  // Nếu phát ảnh nguyên band rồi để CSS lo thì preview vẽ cả band trong khi render chỉ vẽ
+  // mảnh — lệch hệt kiểu preview pan trước đây, chỉ khác là lệch cả nội dung.
+  const r = currentShot?.region;
+  const shotImageUrl = working
+    ? r
+      ? `${working.imageUrl}?x=${r.x}&y=${r.y}&w=${r.w}&h=${r.h}`
+      : working.imageUrl
+    : '';
 
   // Caption hiện theo CÂU (dùng chung logic tách câu + canh giờ với toSrt của CLI).
   let caption: string | null = null;
@@ -369,14 +378,14 @@ export default function VideoPreviewPage() {
               <div className="absolute inset-0 overflow-hidden">
                 {/* eslint-disable-next-line @next/next/no-img-element -- ảnh từ store in-memory */}
                 <img
-                  src={working.imageUrl}
+                  src={shotImageUrl}
                   alt=""
                   aria-hidden
                   className="absolute inset-0 h-full w-full scale-110 object-cover opacity-60 blur-xl"
                 />
                 {/* eslint-disable-next-line @next/next/no-img-element -- ảnh từ store in-memory */}
                 <img
-                  src={working.imageUrl}
+                  src={shotImageUrl}
                   alt={`Band ${currentShot?.sourceIndex}`}
                   className="relative"
                   style={{ ...fgStyle, ...imgTransformStyle, margin: '0 auto' }}

@@ -8,12 +8,33 @@ import {
 } from '@/lib/script';
 import {
   getStoryboard,
+  getWorkingImage,
   setScript,
   setScriptGenerating,
   toScriptDTO,
 } from '@/lib/storyboard-store';
+import { readShotSplitSettings, splitTallShots } from '@/lib/shot-split';
+import { toGray, type GrayImage } from '@/lib/smart-split';
+import type { ScriptSegment } from '@/lib/schema';
 
 export const runtime = 'nodejs';
+
+// Giải mã ảnh xám cho các band mà kịch bản dùng, rồi nở shot quá cao. Chỉ giải mã band
+// THẬT SỰ được tham chiếu, mỗi band một lần — decode là phần đắt nhất ở đây.
+async function splitTallShotsInJob(
+  jobId: string,
+  segments: ScriptSegment[],
+): Promise<ScriptSegment[]> {
+  const settings = readShotSplitSettings();
+  const grays = new Map<number, GrayImage>();
+  const needed = new Set(segments.flatMap((s) => s.shots.map((sh) => sh.sourceIndex)));
+  for (const sourceIndex of needed) {
+    const working = getWorkingImage(jobId, sourceIndex);
+    if (!working) continue;
+    grays.set(sourceIndex, await toGray(working.buffer));
+  }
+  return splitTallShots(segments, (i) => grays.get(i), settings);
+}
 
 // Tạo kịch bản AI cho cả chương: đọc content tươi từng band (mẫu composeBeat) → vision
 // fallback cho band thiếu content → model text gộp/tách thành ScriptSegment[] → lưu store.
@@ -73,7 +94,10 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
         { status: 502 },
       );
     }
-    setScript(id, segments);
+    // Band cao hơn trần bị cắt thành nhiều shot ngắn (gutter-aware) — biên kịch chọn band
+    // theo NỘI DUNG, việc band đó chiếu ra có quá cao hay không là chuyện hình ảnh, tách
+    // riêng khỏi model.
+    setScript(id, await splitTallShotsInJob(id, segments));
     return NextResponse.json(toScriptDTO(getStoryboard(id)!));
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Tạo kịch bản thất bại';
