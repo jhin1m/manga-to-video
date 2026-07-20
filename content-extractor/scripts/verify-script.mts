@@ -18,7 +18,7 @@ import {
   toScriptManifest,
 } from '../lib/schema';
 import { buildPrompt, buildRecapPrompt, generateScript, toScriptSegments } from '../lib/script';
-import { buildVisionPrompt } from '../lib/vision';
+import { buildVisionPrompt, extractJson, ModelOutputError } from '../lib/vision';
 import {
   allocateCaptions,
   allocateShots,
@@ -193,6 +193,78 @@ console.log('Test 2: generateScript qua mock model (fence ```json + index ngoài
   eq(segments[1].shots[0].sourceIndex, 2, 'đoạn 2 trỏ band 2');
   eq(segments[0].durationHint, estimateSeconds(segments[0].narration), 'durationHint ước từ narration');
   await mock.close();
+}
+
+console.log('Test 2b: extractJson — dò object cân bằng ngoặc, bỏ nhiễu quanh JSON');
+{
+  eq(extractJson('{"a":1}'), { a: 1 }, 'JSON thô');
+  eq(extractJson('```json\n{"a":1}\n```'), { a: 1 }, 'trong fence');
+  eq(extractJson('```json\n{"a":1}'), { a: 1 }, 'fence mở chưa đóng');
+  eq(extractJson('{"a":"}"}'), { a: '}' }, 'ngoặc trong chuỗi không tính');
+  eq(extractJson('{"a":"\\\\"}'), { a: '\\' }, 'escape cuối chuỗi không nuốt dấu đóng');
+  // Hai ca cách dò indexOf/lastIndexOf cũ làm sai:
+  eq(extractJson('{"a":1} — xong }'), { a: 1 }, 'bỏ chữ thừa (có ngoặc) sau JSON');
+  eq(extractJson('<think>trả {"a":9} nhé</think>{"a":1}'), { a: 1 }, 'bỏ khối suy nghĩ có ngoặc mồi');
+  const truncated = (raw: string) => {
+    try {
+      extractJson(raw);
+      return '(không ném)';
+    } catch (err) {
+      return err instanceof ModelOutputError ? err.message : `(sai loại: ${err})`;
+    }
+  };
+  ok(truncated('{"segments":[{"n":1},{"n":').includes('bị cắt'), 'JSON cắt giữa chừng → báo rõ bị cắt');
+  ok(truncated('').includes('rỗng'), 'output rỗng → báo rõ rỗng');
+  ok(truncated('{"a":').includes('model trả về: {"a":'), 'thông báo lỗi kèm output thô');
+}
+
+console.log('Test 2c: generateScript — phục hồi khi model trả output hỏng');
+{
+  const inputs = [0, 1, 2].map((i) => ({
+    order: i,
+    sourceIndex: i,
+    beatId: `beat-${i}`,
+    content: { description: `Cảnh ${i}.`, dialogue: [], note: '' },
+    region: null,
+  }));
+  const withMock = async (script: string[], run: (m: Awaited<ReturnType<typeof createMockScriptModel>>) => Promise<void>) => {
+    const mock = await createMockScriptModel(0, script);
+    process.env.SCRIPT_BASE_URL = `http://localhost:${mock.port}/v1`;
+    try {
+      await run(mock);
+    } finally {
+      await mock.close();
+    }
+  };
+
+  // Nhiễu quanh JSON: parse thẳng được, không tốn lượt gọi lại.
+  for (const kind of ['think', 'prose']) {
+    await withMock([kind], async (mock) => {
+      eq((await generateScript(inputs)).length, 2, `output "${kind}" vẫn parse được`);
+      eq(mock.requestCount(), 1, `output "${kind}" không phải gọi lại`);
+    });
+  }
+
+  // JSON vỡ / sai shape = hỏng ngẫu nhiên → phải retry (trước đây fail cứng một phát).
+  for (const kind of ['badshape', 'empty']) {
+    await withMock([kind], async (mock) => {
+      eq((await generateScript(inputs)).length, 2, `output "${kind}" → thử lại rồi qua`);
+      eq(mock.requestCount(), 2, `output "${kind}" gọi lại đúng 1 lần`);
+    });
+  }
+
+  // Chạm trần token: gọi lại sẽ cắt y hệt → dừng ngay + chỉ cách chữa, không đốt 4 lượt.
+  await withMock(['truncated', 'truncated', 'truncated', 'truncated'], async (mock) => {
+    let err: unknown;
+    try {
+      await generateScript(inputs);
+    } catch (e) {
+      err = e;
+    }
+    ok(err instanceof ModelOutputError, 'output bị cắt → ModelOutputError');
+    ok(String((err as Error)?.message).includes('MODEL_MAX_TOKENS'), 'lỗi chỉ đúng cách chữa');
+    eq(mock.requestCount(), 1, 'bị cắt do trần token thì không retry mù');
+  });
 }
 
 console.log('Test 3: toScriptManifest — shape + clone');

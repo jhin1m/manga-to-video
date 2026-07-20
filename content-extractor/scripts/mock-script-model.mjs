@@ -16,8 +16,26 @@ const SCRIPT_RESPONSE = {
   ],
 };
 
-export function createMockScriptModel(port = 0) {
+const GOOD = '```json\n' + JSON.stringify(SCRIPT_RESPONSE) + '\n```';
+
+// Các kiểu output hỏng model thật hay trả — dùng để test đường phục hồi parse.
+// 'truncated': JSON cắt giữa chừng, còn '}' của phần tử con nên cách dò lastIndexOf('}')
+//   cũ cắt ra chuỗi lệch ngoặc. 'think': rò khối suy nghĩ (có '{' làm mồi nhử).
+//   'prose': lời dẫn kẹp hai đầu. 'badshape': JSON hợp lệ nhưng thiếu segments.
+const BAD_OUTPUTS = {
+  truncated: '{"segments":[{"narration":"Mở đầu.","shotIndices":[0,1]},{"narration":"Trận chi',
+  think:
+    '<think>Cần trả về {"segments": [...]}. Đếm lại các khung: 0,1,2.</think>\n' + GOOD,
+  prose: 'Đây là kịch bản của bạn:\n' + GOOD + '\nChúc bạn dựng video vui vẻ!',
+  badshape: '{"ok":true,"result":"xong"}',
+  empty: '',
+};
+
+// script: mảng kiểu output trả theo THỨ TỰ từng request ('good' hoặc key của BAD_OUTPUTS);
+// hết mảng thì trả 'good'. Nhờ đó test được "hỏng lần đầu → retry lần sau qua".
+export function createMockScriptModel(port = 0, script = []) {
   let count = 0;
+  const queue = [...script];
   const server = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/__count') {
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -29,11 +47,17 @@ export function createMockScriptModel(port = 0) {
       req.on('data', (c) => (body += c));
       req.on('end', () => {
         count++;
-        const content = '```json\n' + JSON.stringify(SCRIPT_RESPONSE) + '\n```';
+        const kind = queue.shift() ?? 'good';
+        const content = kind === 'good' ? GOOD : BAD_OUTPUTS[kind];
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(
           JSON.stringify({
-            choices: [{ message: { content } }],
+            choices: [
+              {
+                message: { content },
+                finish_reason: kind === 'truncated' ? 'length' : 'stop',
+              },
+            ],
             usage: { total_tokens: 99 },
           }),
         );

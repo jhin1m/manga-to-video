@@ -81,13 +81,56 @@ Ngữ cảnh chương (người dùng cung cấp — CHỈ dùng để gọi đ�
 ${trimmed}`;
 }
 
-// Cờ adaptive process-wide: thử response_format json_object; nếu endpoint trả 400 thì
-// tắt vĩnh viễn cho tiến trình này và gọi lại không kèm response_format.
+// Cờ adaptive process-wide: thử response_format json_object; nếu endpoint trả 400 VÌ
+// json-mode thì tắt vĩnh viễn cho tiến trình này và gọi lại không kèm response_format.
 let jsonModeSupported = true;
 
 function statusOf(err: unknown): number | undefined {
   const s = (err as { status?: unknown })?.status;
   return typeof s === 'number' ? s : undefined;
+}
+
+// Chỉ 400 NÓI VỀ json-mode mới được TẮT CỜ VĨNH VIỄN. Trước đây mọi 400 đều tắt cờ, nên
+// một ảnh quá khổ hay một lần content-filter là cả tiến trình mất json-mode — các panel
+// sau đó trả prose/fence và hỏng parse hàng loạt.
+// Vẫn thử lại không-json-mode cho MỌI 400 (giữ đường lùi khi endpoint từ chối bằng thông
+// báo mơ hồ); chỉ khác ở chỗ lần từ chối mơ hồ không kéo theo cả các lần gọi sau.
+function isJsonModeRejection(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return /response_format|json_object|json mode|json_schema|json schema/.test(msg);
+}
+
+// Trần token output. Để trống = giữ mặc định của endpoint. Đặt khi model reasoning
+// (Gemini 2.5, GLM) đốt ngân sách output vào phần suy nghĩ làm JSON bị cắt giữa chừng.
+const MAX_TOKENS_ENV = 'MODEL_MAX_TOKENS';
+
+function readMaxTokens(): number | undefined {
+  const n = Number.parseInt(process.env[MAX_TOKENS_ENV] ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+// Trích đoạn output model cho log/thông báo lỗi: giữ đầu + đuôi, bỏ giữa. Thiếu cái này
+// thì lỗi parse là hộp đen — không biết model trả fence, trả prose, hay JSON bị cắt.
+export function snippet(raw: string | null | undefined, keep = 180): string {
+  const text = (raw ?? '').trim();
+  if (!text) return '(rỗng)';
+  if (text.length <= keep * 2) return text;
+  return `${text.slice(0, keep)} …[bỏ ${text.length - keep * 2} ký tự]… ${text.slice(-keep)}`;
+}
+
+// Lỗi output model không dùng được. Mặc định retryable: output hỏng thường là ngẫu nhiên,
+// gọi lại là qua. retryable=false cho trường hợp gọi lại chắc chắn hỏng y hệt (bị cắt do
+// chạm trần token) — retry ở đó chỉ đốt tiền.
+export class ModelOutputError extends Error {
+  readonly raw: string;
+  readonly retryable: boolean;
+
+  constructor(message: string, raw: string | null | undefined, retryable = true) {
+    super(`${message} — model trả về: ${snippet(raw)}`);
+    this.name = 'ModelOutputError';
+    this.raw = raw ?? '';
+    this.retryable = retryable;
+  }
 }
 
 function isRetryable(err: unknown): boolean {
@@ -103,11 +146,12 @@ function isRetryable(err: unknown): boolean {
 }
 
 // Retry 429/5xx/lỗi mạng với backoff mũ — dùng chung cho vision, script (biên kịch) và TTS.
-export async function withRetry<T>(fn: () => Promise<T>, tries = 4): Promise<T> {
+// fn nhận số lần đã thử (0-based) để lần sau đổi cách gọi (vd kèm lời nhắc sửa JSON).
+export async function withRetry<T>(fn: (attempt: number) => Promise<T>, tries = 4): Promise<T> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < tries; attempt++) {
     try {
-      return await fn();
+      return await fn(attempt);
     } catch (err) {
       lastErr = err;
       if (!isRetryable(err) || attempt === tries - 1) throw err;
@@ -131,7 +175,11 @@ export async function createCompletion(
 ): Promise<ChatCompletion> {
   // Với model reasoning của z.ai (GLM), tắt "thinking" giảm ~50% token cho tác vụ đọc
   // ảnh vốn không cần suy luận sâu. Param ngoài chuẩn OpenAI nên cast qua base type.
-  const extra = disableThinking ? { thinking: { type: 'disabled' } } : {};
+  const maxTokens = readMaxTokens();
+  const extra = {
+    ...(disableThinking ? { thinking: { type: 'disabled' } } : {}),
+    ...(maxTokens ? { max_tokens: maxTokens } : {}),
+  };
   if (jsonModeSupported && jsonMode) {
     try {
       return await client.chat.completions.create({
@@ -142,7 +190,14 @@ export async function createCompletion(
       } as ChatCompletionCreateParamsNonStreaming);
     } catch (err) {
       if (statusOf(err) !== 400) throw err;
-      jsonModeSupported = false; // endpoint không hỗ trợ json-mode — gọi lại không kèm
+      if (isJsonModeRejection(err)) {
+        jsonModeSupported = false; // endpoint không hỗ trợ json-mode — thôi hẳn
+        console.warn('[model] endpoint từ chối json-mode — tắt cho tiến trình này');
+      } else {
+        // 400 vì lý do khác (ảnh quá khổ, content-filter…): thử lại không json-mode để
+        // giữ đường lùi, nhưng KHÔNG tắt cờ — lần gọi sau vẫn được dùng json-mode.
+        console.warn(`[model] 400 không rõ có phải do json-mode — thử lại không kèm: ${err instanceof Error ? err.message : err}`);
+      }
     }
   }
   return client.chat.completions.create({
@@ -152,20 +207,128 @@ export async function createCompletion(
   } as ChatCompletionCreateParamsNonStreaming);
 }
 
-// Rút object JSON từ output model: chịu ```json fences, lời dẫn trước/sau — dùng chung
-// cho parseSceneJSON (vision) và parse kịch bản (script).
-export function extractJson(raw: string | null | undefined): unknown {
-  if (!raw || !raw.trim()) throw new Error('Model trả về không đúng JSON (rỗng)');
-  let text = raw.trim();
+// Lần thử lại kèm lời nhắc: model vừa trả sai định dạng, nhắc lại luật để nó không lặp
+// đúng lỗi cũ (đặc biệt khi endpoint không có json-mode nên chỉ còn prompt giữ format).
+const REPAIR_NUDGE: ChatCompletionMessageParam = {
+  role: 'user',
+  content:
+    'Lần trả lời trước KHÔNG parse được thành JSON. Trả lời lại DUY NHẤT một object JSON thô hợp lệ: không markdown, không dấu ```, không lời dẫn, không khối suy nghĩ, không văn bản nào ngoài JSON.',
+};
+
+// Gọi model rồi parse JSON NGAY TRONG vòng retry. Parse nằm ngoài retry là sai: output
+// hỏng ngẫu nhiên (rò khối suy nghĩ, thêm lời dẫn, thoại chưa escape) thì hỏng luôn cả
+// job, trong khi 429 lại được thử tới 4 lần — cùng một mức "lỗi tạm thời".
+export async function completeJson<T>(
+  client: OpenAI,
+  model: string,
+  messages: ChatCompletionMessageParam[],
+  disableThinking: boolean,
+  parse: (raw: string | null | undefined) => T,
+  label: string,
+): Promise<T> {
+  return withRetry(async (attempt) => {
+    const res = await createCompletion(
+      client,
+      model,
+      attempt === 0 ? messages : [...messages, REPAIR_NUDGE],
+      disableThinking,
+    );
+    const choice = res.choices[0];
+    const finish = choice?.finish_reason;
+    if (res.usage) {
+      console.log(`[${label}] tokens=${res.usage.total_tokens} finish=${finish ?? '?'}`);
+    }
+    const content = choice?.message?.content;
+    try {
+      return parse(content);
+    } catch (err) {
+      // finish_reason='length' = chạm trần token, output cắt giữa chừng. Gọi lại y hệt sẽ
+      // cắt y hệt → báo cách chữa thay vì đốt thêm 3 lượt.
+      if (finish === 'length') {
+        // KHÔNG khuyên "tắt reasoning": công tắc disableThinking ở Settings hiện chỉ áp
+        // cho z.ai (isZaiProvider), nên với OpenRouter/OpenAI nó là no-op — chỉ nêu hai
+        // cách thật sự có tác dụng hôm nay.
+        throw new ModelOutputError(
+          `Output bị cắt vì chạm trần token (finish_reason=length). Tăng ${MAX_TOKENS_ENV} trong .env.local, hoặc chia nhỏ đầu vào (bớt số band mỗi lần tạo kịch bản)`,
+          content,
+          false,
+        );
+      }
+      console.warn(
+        `[${label}] parse lỗi lần ${attempt + 1} (finish=${finish ?? '?'}): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw err;
+    }
+  });
+}
+
+// Gỡ nhiễu quanh JSON: khối suy nghĩ của model reasoning và ```fence (kể cả fence mở mà
+// chưa đóng vì output bị cắt). Khối suy nghĩ phải bỏ TRƯỚC khi dò '{' — bên trong nó
+// thường có ngoặc, mọi cách dò sẽ bám nhầm vào đoạn suy nghĩ thay vì câu trả lời.
+function stripNoise(raw: string | null | undefined): string {
+  let text = (raw ?? '').trim();
+  if (!text) return '';
+  text = text
+    .replace(/<(think|thinking|reasoning)>[\s\S]*?<\/\1>/gi, '')
+    .replace(/^[\s\S]*?<\/(?:think|thinking|reasoning)>/i, '')
+    .trim();
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenced) text = fenced[1].trim();
+  if (fenced) return fenced[1].trim();
+  const openFence = text.match(/```(?:json)?\s*([\s\S]*)$/i);
+  if (openFence) return openFence[1].trim();
+  return text;
+}
+
+// Cắt object JSON đầu tiên CÂN BẰNG ngoặc, bỏ qua ngoặc nằm trong chuỗi (tính cả escape).
+// Cặp indexOf('{')/lastIndexOf('}') thô sai hai kiểu: ôm nhầm khi model in thêm chữ sau
+// JSON, và khi output bị cắt giữa chừng thì tóm '}' của phần tử con → slice lệch ngoặc.
+// null = không có object nào đóng đủ (gần như luôn là output bị cắt).
+function sliceBalancedObject(text: string): string | null {
   const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start === -1 || end <= start) throw new Error('Model trả về không đúng JSON');
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (inString && ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}' && --depth === 0) return text.slice(start, i + 1);
+  }
+  return null;
+}
+
+// Rút object JSON từ output model: chịu ```json fences, lời dẫn trước/sau, khối suy nghĩ
+// — dùng chung cho parseSceneJSON (vision) và parse kịch bản (script).
+export function extractJson(raw: string | null | undefined): unknown {
+  const text = stripNoise(raw);
+  if (!text) throw new ModelOutputError('Model trả về không đúng JSON (rỗng)', raw);
+  const candidate = sliceBalancedObject(text);
+  if (!candidate) {
+    throw new ModelOutputError(
+      'Model trả về không đúng JSON (không có object đóng đủ ngoặc — nhiều khả năng output bị cắt giữa chừng)',
+      raw,
+    );
+  }
   try {
-    return JSON.parse(text.slice(start, end + 1));
-  } catch {
-    throw new Error('Model trả về không đúng JSON');
+    return JSON.parse(candidate);
+  } catch (err) {
+    throw new ModelOutputError(
+      `Model trả về không đúng JSON (${err instanceof Error ? err.message : 'parse lỗi'})`,
+      raw,
+    );
   }
 }
 
@@ -226,9 +389,12 @@ export async function describeImage(
       ],
     },
   ];
-  const res = await withRetry(() => createCompletion(client, config.model, messages, config.disableThinking));
-  if (res.usage) {
-    console.log(`[vision] ${filename ?? '?'} tokens=${res.usage.total_tokens}`);
-  }
-  return parseSceneJSON(res.choices[0]?.message?.content);
+  return completeJson(
+    client,
+    config.model,
+    messages,
+    config.disableThinking,
+    parseSceneJSON,
+    `vision ${filename ?? '?'}`,
+  );
 }

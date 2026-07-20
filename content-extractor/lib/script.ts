@@ -4,7 +4,14 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import type { BeatRegion, MotionOverride, SceneContent, ScriptSegment } from './schema';
 import { estimateSeconds } from './schema';
 import { createPacer } from './pipeline';
-import { createCompletion, describeImage, extractJson, withRetry } from './vision';
+import {
+  completeJson,
+  createCompletion,
+  describeImage,
+  extractJson,
+  ModelOutputError,
+  withRetry,
+} from './vision';
 import { isZaiProvider, readAiSettings, resolveApiKey } from './settings';
 import { cropRegion } from './narration';
 import { getStoryboard } from './storyboard-store';
@@ -161,10 +168,12 @@ interface RawSegment {
 
 // Parse output model → danh sách segment thô. Chịu fences/lời dẫn qua extractJson;
 // shotIndices phải là mảng số — phần tử lạ bị loại ở bước validate biên.
-function parseScriptJSON(raw: string | null | undefined): RawSegment[] {
+export function parseScriptJSON(raw: string | null | undefined): RawSegment[] {
   const parsed = extractJson(raw) as Record<string, unknown>;
   if (!Array.isArray(parsed.segments)) {
-    throw new Error('Model trả về không đúng dạng {segments:[...]}');
+    // ModelOutputError (không phải Error trần) để lỗi này cũng được retry + kèm output thô:
+    // JSON hợp lệ nhưng sai shape là hỏng ngẫu nhiên y như JSON vỡ.
+    throw new ModelOutputError('Model trả về không đúng dạng {segments:[...]}', raw);
   }
   return parsed.segments
     .filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
@@ -243,13 +252,15 @@ export async function generateScript(
   const messages: ChatCompletionMessageParam[] = [
     { role: 'user', content: buildPrompt(inputs, context) },
   ];
-  const res = await withRetry(() =>
-    createCompletion(client, config.model, messages, config.disableThinking),
+  const rawSegments = await completeJson(
+    client,
+    config.model,
+    messages,
+    config.disableThinking,
+    parseScriptJSON,
+    `script ${inputs.length} band`,
   );
-  if (res.usage) {
-    console.log(`[script] kịch bản ${inputs.length} band tokens=${res.usage.total_tokens}`);
-  }
-  return toScriptSegments(parseScriptJSON(res.choices[0]?.message?.content), inputs);
+  return toScriptSegments(rawSegments, inputs);
 }
 
 // ==== Recap chương cho series-memory ====
