@@ -64,7 +64,7 @@ const PROMPT = `Bạn là công cụ trích xuất nội dung trang manga cho pi
 ĐỌC KỸ trang truyện trong ảnh rồi trả về DUY NHẤT một JSON thô (không markdown, không lời dẫn, không giải thích) đúng dạng:
 {"description": string, "dialogue": string[], "note": string}
 
-Quy tắc — MỌI giá trị đều bằng tiếng Việt:
+Quy tắc — MỌI giá trị bằng TIẾNG VIỆT (kể cả dialogue: PHẢI dịch, KHÔNG chép nguyên văn tiếng Anh/Hàn/Nhật):
 - "description": mô tả những gì đang diễn ra trong trang (nhân vật, hành động, bối cảnh, cảm xúc). Độ dài thích ứng theo nội dung: trang đơn giản thì ngắn gọn, trang nhiều diễn biến thì chi tiết hơn. Chỉ mô tả những gì nhìn thấy, không suy diễn thêm, không viết lời bình sẵn. Luôn mô tả KHÁCH QUAN ở ngôi thứ ba (gọi nhân vật bằng tên nếu biết, hoặc "chàng trai/cô gái/người đàn ông…") — kể cả khi trang là độc thoại nội tâm ngôi "tôi/ta", description KHÔNG được viết ở ngôi thứ nhất.
 - "dialogue": lời thoại trong các khung/bong bóng thoại, DỊCH sang tiếng Việt (ngôn ngữ gốc có thể là Nhật/Hàn/Anh/Trung), xếp theo đúng thứ tự đọc. Để mảng rỗng [] nếu trang không có thoại.
 - "note": để chuỗi rỗng "" trừ khi thật sự có điều đáng lưu ý: hiệu ứng âm thanh/từ tượng thanh nổi bật, chuyển cảnh, chi tiết nền quan trọng cho mạch truyện, hoặc cảnh báo ảnh mờ/chữ khó đọc (độ tin cậy thấp).`;
