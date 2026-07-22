@@ -160,7 +160,23 @@ console.log('A. Upload 3 khối sọc (thưa/đậm/thưa) → gộp + chia gutt
   eq(sb.progress.phase, 'done', 'tạo storyboard xong (không compose khi chưa có content)');
   eq(sb.sourceKind, 'pages', 'sourceKind pages (band)');
   eq(sb.beats.length, 3, 'mỗi band 1 nhịp');
-  ok(sb.beats.every((b: any) => b.region === null), 'region null (trọn band)');
+  // Auto-region né bubble: null = full band, hoặc {x,y,w,h} hợp lệ trong biên ảnh.
+  ok(
+    sb.beats.every((b: any) => {
+      if (b.region === null) return true;
+      const r = b.region;
+      return (
+        r &&
+        typeof r.x === 'number' &&
+        typeof r.y === 'number' &&
+        typeof r.w === 'number' &&
+        typeof r.h === 'number' &&
+        r.w > 0 &&
+        r.h > 0
+      );
+    }),
+    'region null (full) hoặc bbox né bubble hợp lệ',
+  );
   ok(
     sb.beats.every((b: any) => !b.error && b.narration === ''),
     'fresh chapter → nhịp pending sạch, KHÔNG lỗi "Nội dung trống"',

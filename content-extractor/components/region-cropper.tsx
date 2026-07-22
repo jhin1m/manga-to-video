@@ -24,6 +24,7 @@ import {
 } from '@/lib/schema';
 import { availableModes, planKenburns } from '@/lib/kenburns';
 import { ASPECT_CSS, kenburnsFrameStyle, kenburnsModeLabel } from '@/lib/kenburns-css';
+import { AUTO_REGION_DEFAULTS, autoRegion } from '@/lib/auto-region';
 import { INK_BBOX_DEFAULTS, inkBBox } from '@/lib/ink-bbox';
 
 // Chọn vùng trực quan trên ảnh working: kéo để VẼ khung mới, kéo bên trong khung để DI
@@ -429,13 +430,10 @@ export function RegionCropper({
     onChange(clampRegion({ ...base, [key]: n }, width, height));
   }
 
-  // "Vừa khít nội dung": co region bám vùng có mực của CẢ ảnh, bỏ lề trắng. Chỉ thủ công —
-  // auto-trim đã bị spike bác bỏ (tiết kiệm TB 7.3%, 2/27 band đạt ngưỡng). Tính bbox trên
-  // canvas hạ cỡ rồi SCALE NGƯỢC về px working — quên bước này là region sai toàn bộ;
-  // padding của inkBBox hấp thụ sai số vài px nên không cần canvas full-res.
-  function fitToContent() {
+  // Đọc pixel từ <img> qua canvas hạ cỡ — dùng chung fitToContent + né bubble.
+  function sampleCanvas(): { data: ImageData; scale: number } | null {
     const img = imgRef.current;
-    if (!img || !img.complete || img.naturalWidth === 0) return;
+    if (!img || !img.complete || img.naturalWidth === 0) return null;
     const scale = Math.min(1, PREVIEW_MAX_EDGE / Math.max(width, height));
     const cw = Math.max(1, Math.round(width * scale));
     const ch = Math.max(1, Math.round(height * scale));
@@ -443,18 +441,26 @@ export function RegionCropper({
     canvas.width = cw;
     canvas.height = ch;
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) return null;
     ctx.drawImage(img, 0, 0, cw, ch);
-    let rgba: ImageData;
     try {
-      rgba = ctx.getImageData(0, 0, cw, ch);
+      return { data: ctx.getImageData(0, 0, cw, ch), scale };
     } catch {
-      // Canvas taint (ảnh cross-origin trong tương lai) — báo rõ thay vì nổ trong handler.
-      toast.error('Không đọc được pixel ảnh để tính vùng nội dung.');
-      return;
+      toast.error('Không đọc được pixel ảnh để tính vùng.');
+      return null;
     }
+  }
+
+  // "Vừa khít nội dung": co region bám vùng có mực của CẢ ảnh, bỏ lề trắng. Chỉ thủ công —
+  // auto-trim đã bị spike bác bỏ (tiết kiệm TB 7.3%, 2/27 band đạt ngưỡng). Tính bbox trên
+  // canvas hạ cỡ rồi SCALE NGƯỢC về px working — quên bước này là region sai toàn bộ;
+  // padding của inkBBox hấp thụ sai số vài px nên không cần canvas full-res.
+  function fitToContent() {
+    const sample = sampleCanvas();
+    if (!sample) return;
+    const { data: rgba, scale } = sample;
     const bbox = inkBBox(
-      { data: rgba.data, width: cw, height: ch, channels: 4 },
+      { data: rgba.data, width: rgba.width, height: rgba.height, channels: 4 },
       // Sàn padding tính theo px CANVAS HẠ CỠ rồi mới scale ngược — co sàn theo scale để
       // padding hiệu dụng trên ảnh working đúng ~padMinPx, không bị thổi phồng 1/scale lần.
       { padMinPx: Math.max(2, Math.round(INK_BBOX_DEFAULTS.padMinPx * scale)) },
@@ -473,6 +479,31 @@ export function RegionCropper({
     );
   }
 
+  // "Né bubble": heuristic auto-region — ưu tiên art, phạt blob trắng+chữ (speech bubble).
+  function avoidBubbles() {
+    const sample = sampleCanvas();
+    if (!sample) return;
+    const { data: rgba, scale } = sample;
+    const region = autoRegion(
+      { data: rgba.data, width: rgba.width, height: rgba.height, channels: 4 },
+      {
+        padMinPx: Math.max(2, Math.round(AUTO_REGION_DEFAULTS.padMinPx * scale)),
+      },
+    );
+    if (!region) {
+      toast.info('Không tìm thấy khung né bubble tốt hơn full frame.');
+      return;
+    }
+    const inv = 1 / scale;
+    onChange(
+      clampRegion(
+        { x: region.x * inv, y: region.y * inv, w: region.w * inv, h: region.h * inv },
+        width,
+        height,
+      ),
+    );
+  }
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
@@ -480,17 +511,27 @@ export function RegionCropper({
           Kéo trên ảnh để chọn vùng · kéo trong khung để di chuyển · kéo tay cầm để chỉnh cỡ (
           {width}×{height}px)
         </p>
-        <Button
-          size="xs"
-          variant="outline"
-          className="shrink-0"
-          disabled={disabled}
-          title="Co vùng bám sát nội dung, bỏ lề trắng"
-          onClick={fitToContent}
-        >
-          <Crop data-icon="inline-start" />
-          Vừa khít nội dung
-        </Button>
+        <div className="flex shrink-0 items-center gap-1">
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={disabled}
+            title="Co vùng bám sát nội dung, bỏ lề trắng"
+            onClick={fitToContent}
+          >
+            <Crop data-icon="inline-start" />
+            Vừa khít
+          </Button>
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={disabled}
+            title="Tự chọn khung giảm bong bóng thoại trong video"
+            onClick={avoidBubbles}
+          >
+            Né bubble
+          </Button>
+        </div>
         <label className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
           Cả trang
           <Switch

@@ -13,27 +13,32 @@ import {
   setScriptGenerating,
   toScriptDTO,
 } from '@/lib/storyboard-store';
+import { applyAutoRegionsToSegments } from '@/lib/auto-region-io';
 import { readShotSplitSettings, splitTallShots } from '@/lib/shot-split';
 import { toGray, type GrayImage } from '@/lib/smart-split';
 import type { ScriptSegment } from '@/lib/schema';
 
 export const runtime = 'nodejs';
 
-// Giải mã ảnh xám cho các band mà kịch bản dùng, rồi nở shot quá cao. Chỉ giải mã band
-// THẬT SỰ được tham chiếu, mỗi band một lần — decode là phần đắt nhất ở đây.
+// Giải mã ảnh xám cho các band mà kịch bản dùng, rồi nở shot quá cao + auto-region né bubble.
+// Chỉ giải mã band THẬT SỰ được tham chiếu, mỗi band một lần — decode là phần đắt nhất.
 async function splitTallShotsInJob(
   jobId: string,
   segments: ScriptSegment[],
 ): Promise<ScriptSegment[]> {
   const settings = readShotSplitSettings();
   const grays = new Map<number, GrayImage>();
+  const buffers = new Map<number, Buffer>();
   const needed = new Set(segments.flatMap((s) => s.shots.map((sh) => sh.sourceIndex)));
   for (const sourceIndex of needed) {
     const working = getWorkingImage(jobId, sourceIndex);
     if (!working) continue;
     grays.set(sourceIndex, await toGray(working.buffer));
+    buffers.set(sourceIndex, working.buffer);
   }
-  return splitTallShots(segments, (i) => grays.get(i), settings);
+  const split = splitTallShots(segments, (i) => grays.get(i), settings);
+  // Refine framing: né bubble trong từng mảnh (kể cả sau khi nở shot).
+  return applyAutoRegionsToSegments(split, buffers);
 }
 
 // Tạo kịch bản AI cho cả chương: đọc content tươi từng band (mẫu composeBeat) → vision

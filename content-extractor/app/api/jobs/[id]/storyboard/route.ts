@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getJob } from '@/lib/jobs';
+import { autoRegionFromBuffer } from '@/lib/auto-region-io';
 import { composeStoryboard, skeletonBeats } from '@/lib/narration';
 import {
   createStoryboard,
@@ -27,7 +28,21 @@ async function buildAndCompose(jobId: string): Promise<void> {
     content: it.content,
   }));
   setWorking(jobId, working);
-  setBeats(jobId, skeletonBeats(working.map((w) => ({ sourceIndex: w.sourceIndex }))));
+  // Auto-crop né bubble ngay lúc tạo nhịp (user vẫn sửa tay được trên RegionCropper).
+  const beats = skeletonBeats(working.map((w) => ({ sourceIndex: w.sourceIndex })));
+  await Promise.all(
+    beats.map(async (beat) => {
+      const w = working.find((x) => x.sourceIndex === beat.sourceIndex);
+      if (!w) return;
+      try {
+        const region = await autoRegionFromBuffer(w.buffer, null);
+        if (region) beat.region = region;
+      } catch (err) {
+        console.warn(`[storyboard] auto-region beat#${beat.order} bỏ qua:`, err);
+      }
+    }),
+  );
+  setBeats(jobId, beats);
   // Chapter mới upload chưa có content — beats đứng ở pending sạch chờ "Generate all",
   // compose template lúc này chỉ đẻ ra lỗi "Nội dung trống" hàng loạt.
   if (!job.items.some((it) => it.content != null)) {
