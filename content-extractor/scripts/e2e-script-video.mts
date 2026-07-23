@@ -41,6 +41,44 @@ const post = (path: string, body: unknown) =>
     body: JSON.stringify(body),
   });
 
+// POST /api/jobs giờ trả NDJSON (dòng progress + dòng done cuối) — đọc trọn rồi lấy job.
+async function postJob(fd: FormData): Promise<any> {
+  const res = await fetch(`${BASE}/api/jobs`, { method: 'POST', body: fd });
+  const lines = (await res.text())
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => JSON.parse(l) as { type: string; status?: number; message?: string; job?: any });
+  const err = lines.find((l) => l.type === 'error');
+  if (err) throw new Error(`/api/jobs → ${err.status}: ${err.message}`);
+  const done = lines.find((l) => l.type === 'done');
+  if (!done) throw new Error('/api/jobs → thiếu dòng done');
+  return done.job;
+}
+
+// POST .../script giờ trả NDJSON khi thành công (progress + done) hoặc JSON lỗi cho guard.
+async function postScript(path: string): Promise<any> {
+  const res = await fetch(`${BASE}${path}`, { method: 'POST' });
+  const text = await res.text();
+  if (!res.ok || !(res.headers.get('content-type') ?? '').includes('ndjson')) {
+    let msg = text;
+    try {
+      msg = JSON.parse(text).error ?? text;
+    } catch {}
+    throw new Error(`${path} → HTTP ${res.status}: ${msg}`);
+  }
+  const lines = text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => JSON.parse(l) as { type: string; status?: number; message?: string; script?: any });
+  const err = lines.find((l) => l.type === 'error');
+  if (err) throw new Error(`${path} → ${err.status}: ${err.message}`);
+  const done = lines.find((l) => l.type === 'done');
+  if (!done) throw new Error(`${path} → thiếu dòng done`);
+  return done.script;
+}
+
 function toBlob(buf: Buffer, type: string): Blob {
   return new Blob([new Uint8Array(buf)], { type });
 }
@@ -82,7 +120,7 @@ const fd = new FormData();
 fd.append('images', toBlob(await stripePage(600, 900), 'image/jpeg'), '1.jpg');
 fd.append('images', toBlob(await stripePage(600, 900), 'image/jpeg'), '2.jpg');
 fd.append('images', toBlob(await stripePage(600, 900), 'image/jpeg'), '3.jpg');
-const job = await api<any>('/api/jobs', { method: 'POST', body: fd });
+const job = await postJob(fd);
 eq(job.items.length, 3, '3 band');
 await api<any>(`/api/jobs/${job.jobId}/storyboard`, { method: 'POST' });
 const sbPending = await pollDone(`/api/jobs/${job.jobId}/storyboard`);
@@ -102,7 +140,7 @@ console.log('B. Kịch bản AI: POST script (mock model) — gộp/loại index
 {
   const noScript = await fetch(`${BASE}/api/jobs/${job.jobId}/storyboard/script`);
   eq(noScript.status, 404, 'GET trước khi tạo → 404');
-  const dto = await api<any>(`/api/jobs/${job.jobId}/storyboard/script`, { method: 'POST' });
+  const dto = await postScript(`/api/jobs/${job.jobId}/storyboard/script`);
   eq(dto.confirmed, false, 'mới tạo → chưa confirmed');
   eq(dto.segments.length, 2, 'mock 3 đoạn → 2 (index 99 bị loại)');
   eq(dto.segments[0].shots.length, 2, 'đoạn 1 gộp band 0+1');

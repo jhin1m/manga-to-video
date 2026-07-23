@@ -33,6 +33,21 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+// POST /api/jobs giờ trả NDJSON (dòng progress + dòng done cuối) — đọc trọn rồi lấy job.
+async function postJob(fd: FormData): Promise<any> {
+  const res = await fetch(`${BASE}/api/jobs`, { method: 'POST', body: fd });
+  const lines = (await res.text())
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => JSON.parse(l) as { type: string; status?: number; message?: string; job?: any });
+  const err = lines.find((l) => l.type === 'error');
+  if (err) throw new Error(`/api/jobs → ${err.status}: ${err.message}`);
+  const done = lines.find((l) => l.type === 'done');
+  if (!done) throw new Error('/api/jobs → thiếu dòng done');
+  return done.job;
+}
+
 async function pollStoryboard(jobId: string, timeoutMs = 60000): Promise<any> {
   const start = Date.now();
   for (;;) {
@@ -135,7 +150,7 @@ console.log('A. Upload 3 khối sọc (thưa/đậm/thưa) → gộp + chia gutt
   fd.append('images', toBlob(await stripePage(600, 900, 0.25), 'image/jpeg'), '1.jpg');
   fd.append('images', toBlob(await stripePage(600, 900, 0.5), 'image/jpeg'), '2.jpg');
   fd.append('images', toBlob(await stripePage(600, 900, 0.25), 'image/jpeg'), '10.jpg');
-  const job = await api<any>('/api/jobs', { method: 'POST', body: fd });
+  const job = await postJob(fd);
   eq(job.items.length, 3, 'gộp canvas → 3 band (mỗi khối sọc 1 band)');
   eq(
     job.items.map((it: any) => it.filename),
@@ -338,7 +353,7 @@ let bandCount: number;
   const fd = new FormData();
   fd.append('images', toBlob(slicePages[0], 'image/jpeg'), 'a1.jpg');
   fd.append('images', toBlob(slicePages[1], 'image/jpeg'), 'a2.jpg');
-  const job = await api<any>('/api/jobs', { method: 'POST', body: fd });
+  const job = await postJob(fd);
   bandCount = job.items.length;
   ok(bandCount >= 2, `canvas 1880 → ${bandCount} band`);
   const dims = await Promise.all(job.items.map((it: any) => itemDims(it.imageUrl)));
@@ -428,7 +443,7 @@ console.log('C. PDF: upload PDF 2 trang → render + gộp + chia band như ản
 {
   const fd = new FormData();
   fd.append('images', toBlob(buildPdf(), 'application/pdf'), 'chapter.pdf');
-  const job = await api<any>('/api/jobs', { method: 'POST', body: fd });
+  const job = await postJob(fd);
   // 2 trang 200×300 render scale 2 → canvas 400×1200 → SPLIT_HEIGHT=1000 chia 1-2 band.
   ok(job.items.length >= 1, `PDF vào pipeline → ${job.items.length} band`);
   ok(
@@ -448,7 +463,7 @@ console.log('D. Xoá band (khu upload) + xoá nhịp (storyboard): hard-delete, 
   fd.append('images', toBlob(await stripePage(600, 900, 0.3), 'image/jpeg'), '1.jpg');
   fd.append('images', toBlob(await stripePage(600, 900, 0.3), 'image/jpeg'), '2.jpg');
   fd.append('images', toBlob(await stripePage(600, 900, 0.3), 'image/jpeg'), '3.jpg');
-  const job = await api<any>('/api/jobs', { method: 'POST', body: fd });
+  const job = await postJob(fd);
   eq(job.items.length, 3, 'D1: upload 3 khối sọc → 3 band');
 
   const delOOB = await fetch(`${BASE}/api/jobs/${job.jobId}/items/99`, { method: 'DELETE' });
@@ -512,7 +527,7 @@ console.log('D. Xoá band (khu upload) + xoá nhịp (storyboard): hard-delete, 
 
   const fdNoSb = new FormData();
   fdNoSb.append('images', toBlob(await solidJpeg(600, 500, 200), 'image/jpeg'), '1.jpg');
-  const jobNoSb = await api<any>('/api/jobs', { method: 'POST', body: fdNoSb });
+  const jobNoSb = await postJob(fdNoSb);
   const delNoSb = await fetch(`${BASE}/api/jobs/${jobNoSb.jobId}/storyboard/beats/x`, {
     method: 'DELETE',
   });
