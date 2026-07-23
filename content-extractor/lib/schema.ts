@@ -35,6 +35,17 @@ export interface JobStatusDTO {
   context: string;
 }
 
+// Tiến trình ingest phát dần qua NDJSON stream POST /api/jobs (pha-2 upload). Kiểu dùng CHUNG
+// client+server → đặt ở schema (không import Buffer). done/total optional: bước gộp/dò band là
+// thao tác đơn khối, không đếm được.
+export type IngestStage = 'pdf' | 'downscale' | 'stitch' | 'detect' | 'extract';
+
+export interface IngestProgress {
+  stage: IngestStage;
+  done?: number;
+  total?: number;
+}
+
 export interface ManifestItem {
   index: number;
   filename: string;

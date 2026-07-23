@@ -3,6 +3,7 @@ import sharp from 'sharp';
 import type {
   ChatCompletion,
   ChatCompletionCreateParamsNonStreaming,
+  ChatCompletionCreateParamsStreaming,
   ChatCompletionMessageParam,
 } from 'openai/resources/chat/completions';
 import type { SceneContent } from './schema';
@@ -218,6 +219,38 @@ const REPAIR_NUDGE: ChatCompletionMessageParam = {
 // Gọi model rồi parse JSON NGAY TRONG vòng retry. Parse nằm ngoài retry là sai: output
 // hỏng ngẫu nhiên (rò khối suy nghĩ, thêm lời dẫn, thoại chưa escape) thì hỏng luôn cả
 // job, trong khi 429 lại được thử tới 4 lần — cùng một mức "lỗi tạm thời".
+// Parse + chẩn đoán chung cho completeJson (non-stream) và completeJsonStream (stream): cùng
+// semantics finish_reason='length' → non-retryable, parse lỗi khác → retry. Tách để hai đường
+// LẤY chuỗi (non-stream vs stream) chia sẻ đúng một cách XỬ LÝ chuỗi (không đổi kết quả).
+function diagnoseAndParse<T>(
+  content: string | null | undefined,
+  finish: string | undefined,
+  parse: (raw: string | null | undefined) => T,
+  label: string,
+  attempt: number,
+): T {
+  try {
+    return parse(content);
+  } catch (err) {
+    // finish_reason='length' = chạm trần token, output cắt giữa chừng. Gọi lại y hệt sẽ
+    // cắt y hệt → báo cách chữa thay vì đốt thêm 3 lượt.
+    if (finish === 'length') {
+      // KHÔNG khuyên "tắt reasoning": công tắc disableThinking ở Settings hiện chỉ áp
+      // cho z.ai (isZaiProvider), nên với OpenRouter/OpenAI nó là no-op — chỉ nêu hai
+      // cách thật sự có tác dụng hôm nay.
+      throw new ModelOutputError(
+        `Output bị cắt vì chạm trần token (finish_reason=length). Tăng ${MAX_TOKENS_ENV} trong .env.local, hoặc chia nhỏ đầu vào (bớt số band mỗi lần tạo kịch bản)`,
+        content,
+        false,
+      );
+    }
+    console.warn(
+      `[${label}] parse lỗi lần ${attempt + 1} (finish=${finish ?? '?'}): ${err instanceof Error ? err.message : String(err)}`,
+    );
+    throw err;
+  }
+}
+
 export async function completeJson<T>(
   client: OpenAI,
   model: string,
@@ -238,27 +271,112 @@ export async function completeJson<T>(
     if (res.usage) {
       console.log(`[${label}] tokens=${res.usage.total_tokens} finish=${finish ?? '?'}`);
     }
-    const content = choice?.message?.content;
-    try {
-      return parse(content);
-    } catch (err) {
-      // finish_reason='length' = chạm trần token, output cắt giữa chừng. Gọi lại y hệt sẽ
-      // cắt y hệt → báo cách chữa thay vì đốt thêm 3 lượt.
-      if (finish === 'length') {
-        // KHÔNG khuyên "tắt reasoning": công tắc disableThinking ở Settings hiện chỉ áp
-        // cho z.ai (isZaiProvider), nên với OpenRouter/OpenAI nó là no-op — chỉ nêu hai
-        // cách thật sự có tác dụng hôm nay.
-        throw new ModelOutputError(
-          `Output bị cắt vì chạm trần token (finish_reason=length). Tăng ${MAX_TOKENS_ENV} trong .env.local, hoặc chia nhỏ đầu vào (bớt số band mỗi lần tạo kịch bản)`,
-          content,
-          false,
-        );
-      }
-      console.warn(
-        `[${label}] parse lỗi lần ${attempt + 1} (finish=${finish ?? '?'}): ${err instanceof Error ? err.message : String(err)}`,
-      );
-      throw err;
+    return diagnoseAndParse(choice?.message?.content, finish, parse, label, attempt);
+  });
+}
+
+// Endpoint không nhận stream:true (một số OpenRouter model kèm param GLM). Non-retryable để
+// withRetry NÉM NGAY ra caller (generateScript) tự lùi về non-stream, không đốt 4 lượt.
+export class StreamUnsupportedError extends Error {
+  readonly retryable = false;
+  constructor(cause: unknown) {
+    super(`Endpoint không hỗ trợ stream: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'StreamUnsupportedError';
+  }
+}
+
+// Gọi chat.completions ở stream:true, cộng dồn delta.content, gọi onDelta(tổng ký tự) có
+// throttle (~10 lần/giây, tránh spam UI). Trả chuỗi content ĐẦY ĐỦ (bằng
+// res.choices[0].message.content của bản non-stream) + finish_reason chunk cuối. Chỉ đếm
+// delta.content (KHÔNG đếm reasoning) → counter phản ánh phần trả lời thật. Endpoint từ chối
+// stream → ném StreamUnsupportedError để caller fallback.
+export async function createCompletionStream(
+  client: OpenAI,
+  model: string,
+  messages: ChatCompletionMessageParam[],
+  disableThinking: boolean,
+  onDelta?: (chars: number) => void,
+  jsonMode = true,
+): Promise<{ content: string; finish: string | undefined }> {
+  const maxTokens = readMaxTokens();
+  const extra = {
+    ...(disableThinking ? { thinking: { type: 'disabled' } } : {}),
+    ...(maxTokens ? { max_tokens: maxTokens } : {}),
+    ...(jsonModeSupported && jsonMode ? { response_format: { type: 'json_object' } } : {}),
+  };
+
+  let stream: Awaited<ReturnType<typeof client.chat.completions.create>>;
+  try {
+    stream = await client.chat.completions.create({
+      model,
+      messages,
+      stream: true,
+      ...extra,
+    } as ChatCompletionCreateParamsStreaming);
+  } catch (err) {
+    // json-mode rejection giống non-stream: tắt cờ rồi thử lại KHÔNG json-mode (vẫn stream).
+    if (statusOf(err) === 400 && isJsonModeRejection(err)) {
+      jsonModeSupported = false;
+      console.warn('[model] endpoint từ chối json-mode (stream) — tắt cho tiến trình này');
+      return createCompletionStream(client, model, messages, disableThinking, onDelta, false);
     }
+    throw new StreamUnsupportedError(err);
+  }
+
+  let content = '';
+  let finish: string | undefined;
+  let lastEmit = 0;
+  try {
+    for await (const chunk of stream as AsyncIterable<{
+      choices?: Array<{ delta?: { content?: string | null }; finish_reason?: string | null }>;
+    }>) {
+      const choice = chunk.choices?.[0];
+      const piece = choice?.delta?.content;
+      if (piece) {
+        content += piece;
+        const now = Date.now();
+        if (now - lastEmit >= 100) {
+          lastEmit = now;
+          onDelta?.(content.length);
+        }
+      }
+      if (choice?.finish_reason) finish = choice.finish_reason;
+    }
+  } catch (err) {
+    // Stream mở được nhưng không ra token nào (vd mock trả JSON thường thay vì SSE) → coi như
+    // không dùng được, để caller lùi non-stream. Có nội dung dở → ném lỗi thường (withRetry xử).
+    if (!content) throw new StreamUnsupportedError(err);
+    throw err;
+  }
+  if (!content) throw new StreamUnsupportedError(new Error('stream không trả token nào'));
+  onDelta?.(content.length); // mốc cuối — đủ ký tự
+  return { content, finish };
+}
+
+// Song song completeJson nhưng LẤY chuỗi qua stream (đếm ký tự real-time). parse/nudge/retry
+// GIỮ NGUYÊN semantics (dùng chung diagnoseAndParse). onAttempt báo mỗi lần thử để UI hiện
+// "thử lại lần k". Endpoint từ chối stream → StreamUnsupportedError ném ngay (caller lùi
+// completeJson).
+export async function completeJsonStream<T>(
+  client: OpenAI,
+  model: string,
+  messages: ChatCompletionMessageParam[],
+  disableThinking: boolean,
+  parse: (raw: string | null | undefined) => T,
+  label: string,
+  hooks?: { onDelta?: (chars: number) => void; onAttempt?: (attempt: number) => void },
+): Promise<T> {
+  return withRetry(async (attempt) => {
+    hooks?.onAttempt?.(attempt);
+    const { content, finish } = await createCompletionStream(
+      client,
+      model,
+      attempt === 0 ? messages : [...messages, REPAIR_NUDGE],
+      disableThinking,
+      hooks?.onDelta,
+    );
+    console.log(`[${label}] stream chars=${content.length} finish=${finish ?? '?'}`);
+    return diagnoseAndParse(content, finish, parse, label, attempt);
   });
 }
 

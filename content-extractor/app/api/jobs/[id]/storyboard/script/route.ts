@@ -14,6 +14,7 @@ import {
   toScriptDTO,
 } from '@/lib/storyboard-store';
 import { applyAutoRegionsToSegments } from '@/lib/auto-region-io';
+import { createNdjsonStream } from '@/lib/ndjson-stream';
 import { readShotSplitSettings, splitTallShots } from '@/lib/shot-split';
 import { toGray, type GrayImage } from '@/lib/smart-split';
 import type { ScriptSegment } from '@/lib/schema';
@@ -88,28 +89,55 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
       };
     });
 
+  // Guard đồng bộ đã qua → mở NDJSON stream. setScriptGenerating đặt TRƯỚC khi trả response
+  // (đồng bộ) để request thứ hai racing thấy cờ → 409; reset trong finally của công việc nền.
   setScriptGenerating(id, true);
-  try {
-    const context = job?.context;
-    const resolved = await resolveMissingContent(id, inputs, { context });
-    const segments = await generateScript(resolved, context);
-    if (segments.length === 0) {
-      return NextResponse.json(
-        { error: 'Model không trả về đoạn kịch bản hợp lệ nào — thử tạo lại' },
-        { status: 502 },
-      );
+  const { response, write, close } = createNdjsonStream();
+
+  void (async () => {
+    try {
+      const context = job?.context;
+      const resolved = await resolveMissingContent(id, inputs, {
+        context,
+        onProgress: (done, total) => write({ type: 'progress', phase: 'resolving', done, total }),
+      });
+      // Chốt pha 'writing' TRƯỚC khi gọi model → thứ tự nhãn resolving→writing→splitting luôn
+      // đúng, kể cả khi stream bị lùi non-stream (không có onChars nào phát): counter đứng ở 0.
+      write({ type: 'progress', phase: 'writing', chars: 0 });
+      const segments = await generateScript(resolved, context, {
+        onChars: (chars) => write({ type: 'progress', phase: 'writing', chars }),
+        // attempt 0 = lần đầu (không phải "thử lại"); chỉ báo từ lần 2 (attempt+1).
+        onAttempt: (attempt) => {
+          if (attempt > 0) write({ type: 'progress', phase: 'writing', attempt: attempt + 1 });
+        },
+      });
+      if (segments.length === 0) {
+        write({
+          type: 'error',
+          status: 502,
+          message: 'Model không trả về đoạn kịch bản hợp lệ nào — thử tạo lại',
+        });
+        return;
+      }
+      // Band cao hơn trần bị cắt thành nhiều shot ngắn (gutter-aware) — biên kịch chọn band
+      // theo NỘI DUNG, việc band đó chiếu ra có quá cao hay không là chuyện hình ảnh, tách
+      // riêng khỏi model.
+      write({ type: 'progress', phase: 'splitting' });
+      setScript(id, await splitTallShotsInJob(id, segments));
+      write({ type: 'done', script: toScriptDTO(getStoryboard(id)!) });
+    } catch (err) {
+      write({
+        type: 'error',
+        status: 502,
+        message: err instanceof Error ? err.message : 'Tạo kịch bản thất bại',
+      });
+    } finally {
+      setScriptGenerating(id, false);
+      close();
     }
-    // Band cao hơn trần bị cắt thành nhiều shot ngắn (gutter-aware) — biên kịch chọn band
-    // theo NỘI DUNG, việc band đó chiếu ra có quá cao hay không là chuyện hình ảnh, tách
-    // riêng khỏi model.
-    setScript(id, await splitTallShotsInJob(id, segments));
-    return NextResponse.json(toScriptDTO(getStoryboard(id)!));
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Tạo kịch bản thất bại';
-    return NextResponse.json({ error: message }, { status: 502 });
-  } finally {
-    setScriptGenerating(id, false);
-  }
+  })();
+
+  return response;
 }
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {

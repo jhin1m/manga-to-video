@@ -6,6 +6,7 @@ import { renderPdf } from './pdf';
 import { detectBands } from './smart-split';
 import { readStripRatio } from './source-kind';
 import { stitchSlices } from './stitch';
+import type { IngestProgress } from './schema';
 
 export interface RawImage {
   filename: string;
@@ -18,7 +19,12 @@ export const PDF_EXT = /\.pdf$/i;
 // PDF upload trực tiếp → render từng trang thành RawImage TRƯỚC extractImages
 // (extractImages lọc theo đuôi ảnh nên PDF phải nở ra trang ở đây). Tên trang đệm 0
 // theo tổng số trang để natural sort giữ nguyên thứ tự đọc.
-export async function expandPdfs(uploaded: RawImage[]): Promise<RawImage[]> {
+export async function expandPdfs(
+  uploaded: RawImage[],
+  onProgress?: (p: IngestProgress) => void,
+): Promise<RawImage[]> {
+  const total = uploaded.filter((f) => PDF_EXT.test(f.filename)).length;
+  let done = 0;
   const out: RawImage[] = [];
   for (const file of uploaded) {
     if (!PDF_EXT.test(file.filename)) {
@@ -31,6 +37,7 @@ export async function expandPdfs(uploaded: RawImage[]): Promise<RawImage[]> {
     pages.forEach((buffer, i) => {
       out.push({ filename: `${base}-p${String(i + 1).padStart(pad, '0')}.png`, buffer });
     });
+    onProgress?.({ stage: 'pdf', done: ++done, total });
   }
   return out;
 }
@@ -99,13 +106,20 @@ export interface BandItem {
 // → smart-split tìm khoảng an toàn (không cắt ngang bubble/chữ) → cắt lại thành từng band.
 // Mỗi band là một "ảnh" của job từ đây trở đi (thumbnail, vision Stage 1, 1 nhịp storyboard)
 // — biên trang gốc không còn quyết định biên nhịp, nên không cần tách/gộp tay ở storyboard.
-export async function ingestBandItems(images: RawImage[], maxEdge: number): Promise<BandItem[]> {
+export async function ingestBandItems(
+  images: RawImage[],
+  maxEdge: number,
+  onProgress?: (p: IngestProgress) => void,
+): Promise<BandItem[]> {
   const limit = pLimit(4);
+  let dsDone = 0;
   const downscaled = await Promise.all(
     images.map((img) =>
       limit(async () => {
         try {
-          return await downscale(img.buffer, maxEdge);
+          const buf = await downscale(img.buffer, maxEdge);
+          onProgress?.({ stage: 'downscale', done: ++dsDone, total: images.length });
+          return buf;
         } catch {
           // Ném kèm tên file — thà fail rõ ràng còn hơn lặng lẽ mất trang giữa chapter
           throw new Error(`Ảnh hỏng hoặc không đọc được: ${img.filename}`);
@@ -113,21 +127,28 @@ export async function ingestBandItems(images: RawImage[], maxEdge: number): Prom
       }),
     ),
   );
+  onProgress?.({ stage: 'stitch' });
   const canvas = await stitchSlices(downscaled);
+  onProgress?.({ stage: 'detect' });
   const bands = await detectBands(canvas.buffer);
   const pad = String(bands.length).length;
+  let exDone = 0;
   return Promise.all(
     bands.map((band, i) =>
-      limit(async () => ({
-        filename: `band-${String(i + 1).padStart(pad, '0')}.jpg`,
-        buffer: await sharp(canvas.buffer, { limitInputPixels: false })
-          .extract({ left: band.x, top: band.y, width: band.w, height: band.h })
-          .jpeg({ quality: 80 })
-          .toBuffer(),
-        mime: 'image/jpeg',
-        width: band.w,
-        height: band.h,
-      })),
+      limit(async () => {
+        const item = {
+          filename: `band-${String(i + 1).padStart(pad, '0')}.jpg`,
+          buffer: await sharp(canvas.buffer, { limitInputPixels: false })
+            .extract({ left: band.x, top: band.y, width: band.w, height: band.h })
+            .jpeg({ quality: 80 })
+            .toBuffer(),
+          mime: 'image/jpeg',
+          width: band.w,
+          height: band.h,
+        };
+        onProgress?.({ stage: 'extract', done: ++exDone, total: bands.length });
+        return item;
+      }),
     ),
   );
 }

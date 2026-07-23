@@ -6,10 +6,12 @@ import { estimateSeconds } from './schema';
 import { createPacer } from './pipeline';
 import {
   completeJson,
+  completeJsonStream,
   createCompletion,
   describeImage,
   extractJson,
   ModelOutputError,
+  StreamUnsupportedError,
   withRetry,
 } from './vision';
 import { isZaiProvider, readAiSettings, resolveApiKey } from './settings';
@@ -124,7 +126,12 @@ ${trimmed}`
 export async function resolveMissingContent(
   jobId: string,
   inputs: ScriptBeatInput[],
-  opts?: { concurrency?: number; minIntervalMs?: number; context?: string },
+  opts?: {
+    concurrency?: number;
+    minIntervalMs?: number;
+    context?: string;
+    onProgress?: (done: number, total: number) => void;
+  },
 ): Promise<ScriptBeatInput[]> {
   const missing = inputs.filter((inp) => !inp.content);
   if (missing.length === 0) return inputs;
@@ -133,26 +140,32 @@ export async function resolveMissingContent(
   const limit = pLimit(opts?.concurrency ?? 4);
   const pace = createPacer(opts?.minIntervalMs ?? 0);
   const resolved = new Map<string, SceneContent>();
+  let done = 0;
+  const total = missing.length;
   await Promise.all(
     missing.map((inp) =>
       limit(async () => {
         const working = state.working.find((w) => w.sourceIndex === inp.sourceIndex);
-        if (!working) return;
-        try {
-          await pace();
-          const cropped = await cropRegion(working, {
-            x: 0,
-            y: 0,
-            w: working.width,
-            h: working.height,
-          });
-          resolved.set(
-            inp.beatId,
-            await describeImage(cropped, `script-band#${inp.order}`, opts?.context),
-          );
-        } catch (err) {
-          console.error(`[script] vision fallback band#${inp.order} lỗi:`, err);
+        if (working) {
+          try {
+            await pace();
+            const cropped = await cropRegion(working, {
+              x: 0,
+              y: 0,
+              w: working.width,
+              h: working.height,
+            });
+            resolved.set(
+              inp.beatId,
+              await describeImage(cropped, `script-band#${inp.order}`, opts?.context),
+            );
+          } catch (err) {
+            console.error(`[script] vision fallback band#${inp.order} lỗi:`, err);
+          }
         }
+        // Đếm cả band lỗi/không có working: tiến trình phản ánh SỐ band ĐÃ XỬ LÝ, không phải
+        // số band thành công (lỗi từng band đã cô lập, không chặn kịch bản).
+        opts?.onProgress?.(++done, total);
       }),
     ),
   );
@@ -238,9 +251,14 @@ export function toScriptSegments(
 
 // Gọi model text viết kịch bản cả chương. Throw khi model/parse hỏng hoàn toàn
 // (route trả lỗi rõ); lỗi từng band đã được cô lập ở resolveMissingContent.
+// hooks (Phase 3): onChars đếm ký tự model stream real-time, onAttempt báo lần thử lại. Có
+// hooks → đi đường stream (completeJsonStream); endpoint từ chối stream thì LÙI về completeJson
+// IM LẶNG (counter đứng im, kết quả kịch bản KHÔNG đổi — cùng parse/nudge/toScriptSegments).
+// Không hooks (recap/caller cũ) → dùng completeJson y như trước.
 export async function generateScript(
   inputs: ScriptBeatInput[],
   context?: string,
+  hooks?: { onChars?: (chars: number) => void; onAttempt?: (attempt: number) => void },
 ): Promise<ScriptSegment[]> {
   if (inputs.length === 0) return [];
   const config = readScriptConfig();
@@ -252,14 +270,44 @@ export async function generateScript(
   const messages: ChatCompletionMessageParam[] = [
     { role: 'user', content: buildPrompt(inputs, context) },
   ];
-  const rawSegments = await completeJson(
-    client,
-    config.model,
-    messages,
-    config.disableThinking,
-    parseScriptJSON,
-    `script ${inputs.length} band`,
-  );
+  const label = `script ${inputs.length} band`;
+  let rawSegments: RawSegment[];
+  if (hooks) {
+    try {
+      rawSegments = await completeJsonStream(
+        client,
+        config.model,
+        messages,
+        config.disableThinking,
+        parseScriptJSON,
+        label,
+        { onDelta: hooks.onChars, onAttempt: hooks.onAttempt },
+      );
+    } catch (err) {
+      if (err instanceof StreamUnsupportedError) {
+        console.warn('[script] stream không dùng được — lùi non-stream:', err.message);
+        rawSegments = await completeJson(
+          client,
+          config.model,
+          messages,
+          config.disableThinking,
+          parseScriptJSON,
+          label,
+        );
+      } else {
+        throw err;
+      }
+    }
+  } else {
+    rawSegments = await completeJson(
+      client,
+      config.model,
+      messages,
+      config.disableThinking,
+      parseScriptJSON,
+      label,
+    );
+  }
   return toScriptSegments(rawSegments, inputs);
 }
 

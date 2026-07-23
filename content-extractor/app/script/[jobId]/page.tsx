@@ -7,10 +7,12 @@ import { ArrowDown, ArrowUp, ArrowRight, Check, Scissors, Sparkles, Trash2 } fro
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { Progress } from '@/components/ui/progress';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { PageShell } from '@/components/page-shell';
 import { useProject } from '@/components/project-context';
+import { readNdjsonBody } from '@/lib/ndjson-client';
 import type { ScriptDTO, StoryboardDTO } from '@/lib/schema';
 
 // Trang duyệt kịch bản AI (Stage 2): hiện ScriptSegment[] đề xuất, cho gộp/tách/sửa/xoá/
@@ -28,6 +30,18 @@ async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+// Dòng NDJSON của POST .../script (Phase 3). writing.chars đếm ký tự model stream; writing.attempt
+// (≥2) = đang thử lại. Model gọi ở JSON mode nên stream là JSON thô → hiện ĐẾM KÝ TỰ, không
+// preview lời kể.
+type ScriptLine =
+  | { type: 'progress'; phase: 'resolving'; done: number; total: number }
+  | { type: 'progress'; phase: 'writing'; chars?: number; attempt?: number }
+  | { type: 'progress'; phase: 'splitting' }
+  | { type: 'done'; script: ScriptDTO }
+  | { type: 'error'; status: number; message: string };
+
+type GenPhase = 'resolving' | 'writing' | 'splitting';
+
 export default function ScriptPage() {
   const { jobId } = useParams<{ jobId: string }>();
   const router = useRouter();
@@ -38,6 +52,11 @@ export default function ScriptPage() {
   const [generating, setGenerating] = useState(false);
   const [busy, setBusy] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, string>>({}); // segId → narration đang sửa
+  // Tiến trình tạo kịch bản (Phase 3): pha + số ký tự model đã sinh + lần thử + đếm resolving.
+  const [genPhase, setGenPhase] = useState<GenPhase | null>(null);
+  const [genChars, setGenChars] = useState(0);
+  const [genAttempt, setGenAttempt] = useState(1); // 1 = lần đầu; ≥2 khi retry
+  const [resolveProg, setResolveProg] = useState<{ done: number; total: number } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -79,10 +98,44 @@ export default function ScriptPage() {
 
   async function generate() {
     setGenerating(true);
+    setGenPhase(null);
+    setGenChars(0);
+    setGenAttempt(1);
+    setResolveProg(null);
     try {
-      setScript(
-        await fetchJSON<ScriptDTO>(`/api/jobs/${jobId}/storyboard/script`, { method: 'POST' }),
-      );
+      const res = await fetch(`/api/jobs/${jobId}/storyboard/script`, { method: 'POST' });
+      // Guard đồng bộ (404/409/400) trả JSON lỗi thường — không phải NDJSON.
+      const ctype = res.headers.get('content-type') ?? '';
+      if (!res.ok || !res.body || !ctype.includes('ndjson')) {
+        const data: unknown = await res.json().catch(() => null);
+        throw new Error((data as { error?: string } | null)?.error ?? `Lỗi HTTP ${res.status}`);
+      }
+      let dto: ScriptDTO | null = null;
+      let errMsg: string | null = null;
+      await readNdjsonBody(res.body, (obj) => {
+        const line = obj as ScriptLine;
+        if (line.type === 'done') dto = line.script;
+        else if (line.type === 'error') errMsg = line.message;
+        else if (line.type === 'progress') {
+          if (line.phase === 'resolving') {
+            setGenPhase('resolving');
+            setResolveProg({ done: line.done, total: line.total });
+          } else if (line.phase === 'writing') {
+            setGenPhase('writing');
+            if (line.attempt !== undefined) {
+              setGenAttempt(line.attempt); // retry → reset counter (semantics withRetry)
+              setGenChars(0);
+            } else if (line.chars !== undefined) {
+              setGenChars(line.chars);
+            }
+          } else if (line.phase === 'splitting') {
+            setGenPhase('splitting');
+          }
+        }
+      });
+      if (errMsg) throw new Error(errMsg);
+      if (!dto) throw new Error('Máy chủ kết thúc bất thường (không nhận được kịch bản).');
+      setScript(dto);
       setDrafts({});
       publish({ scriptConfirmed: false, dirty: true });
     } catch (err) {
@@ -90,6 +143,22 @@ export default function ScriptPage() {
     } finally {
       setGenerating(false);
     }
+  }
+
+  // Nhãn pha tạo kịch bản. writing hiện đếm ký tự (JSON mode → không preview lời kể được);
+  // retry (attempt≥2) chèn "thử lại lần k".
+  function genLabel(): string {
+    if (genPhase === 'resolving') {
+      return resolveProg
+        ? `Bổ sung nội dung ${resolveProg.done}/${resolveProg.total} band…`
+        : 'Bổ sung nội dung…';
+    }
+    if (genPhase === 'writing') {
+      const retry = genAttempt > 1 ? `Thử lại lần ${genAttempt} — ` : '';
+      return `${retry}Model đã sinh ~${genChars.toLocaleString('vi-VN')} ký tự…`;
+    }
+    if (genPhase === 'splitting') return 'Chia shot & né bubble…';
+    return 'Đang chuẩn bị…';
   }
 
   // Mọi mutator trả về ScriptDTO đầy đủ → thay state một phát. Trả về true/false để
@@ -188,6 +257,25 @@ export default function ScriptPage() {
         </>
       }
     >
+      {generating && (
+        <Card className="mb-4 py-4">
+          <CardContent className="px-4">
+            <span className="text-sm font-medium">{genLabel()}</span>
+            {genPhase === 'resolving' && resolveProg && resolveProg.total > 0 ? (
+              <Progress
+                value={(resolveProg.done / resolveProg.total) * 100}
+                className="mt-3"
+              />
+            ) : (
+              // Pha writing/splitting không đếm được tổng → thanh vô định (pulse); reduced-motion → tắt.
+              <div className="mt-3 h-1 w-full overflow-hidden rounded-full bg-muted">
+                <div className="h-full w-1/3 animate-pulse rounded-full bg-primary motion-reduce:animate-none" />
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {script && missing.length > 0 && (
         <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300">
           Band chưa vào kịch bản: {missing.map((w) => `#${w.sourceIndex + 1}`).join(', ')} — sửa

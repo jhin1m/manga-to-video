@@ -6,12 +6,14 @@ import { toast } from 'sonner';
 import { Download, FolderInput, Sparkles, Upload, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { Progress } from '@/components/ui/progress';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { PageShell } from '@/components/page-shell';
 import { useProject } from '@/components/project-context';
+import { readNdjson } from '@/lib/ndjson-client';
 import { cn } from '@/lib/utils';
-import type { ItemDTO, JobStatusDTO, StoryboardDTO } from '@/lib/schema';
+import type { IngestStage, ItemDTO, JobStatusDTO, StoryboardDTO } from '@/lib/schema';
 
 const ACCEPTED = /\.(jpe?g|png|webp|gif|zip|pdf)$/i;
 
@@ -25,11 +27,86 @@ async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+// Dòng NDJSON của POST /api/jobs (pha-2 ingest). Xem lib/ndjson-stream.ts.
+type UploadLine =
+  | { type: 'progress'; stage: IngestStage; done?: number; total?: number }
+  | { type: 'done'; job: JobStatusDTO }
+  | { type: 'error'; status: number; message: string };
+
+// Bước ingest → nhãn tiếng Việt (kèm đếm i/N khi có).
+function stepLabel(p: { stage: IngestStage; done?: number; total?: number }): string {
+  const count = p.total ? ` ${p.done}/${p.total}` : '';
+  switch (p.stage) {
+    case 'pdf':
+      return `Đang nở PDF${count}`;
+    case 'downscale':
+      return `Đang thu nhỏ ảnh${count}`;
+    case 'stitch':
+      return 'Đang gộp dải dọc…';
+    case 'detect':
+      return 'Đang chia band…';
+    case 'extract':
+      return `Đang cắt band${count}`;
+  }
+}
+
+// Upload qua XHR (không fetch) để đo được cả 2 pha trong MỘT request: pha-1 = % bytes tải lên
+// (xhr.upload.onprogress), pha-2 = bước xử lý server đọc dần từ NDJSON. onStep(null) = vẫn đang
+// ở pha-1. Resolve = JobStatusDTO như hành vi cũ; reject = lỗi (dòng error / mạng / timeout).
+function uploadJob(
+  fd: FormData,
+  hooks: { onUpload: (pct: number) => void; onStep: (label: string) => void },
+): Promise<JobStatusDTO> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/jobs');
+    let settled = false;
+    let result: JobStatusDTO | null = null;
+    let errMsg: string | null = null;
+
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable) hooks.onUpload(Math.round((e.loaded / e.total) * 100));
+    });
+    xhr.upload.addEventListener('load', () => hooks.onUpload(100));
+
+    // readNdjson tự đăng ký progress+load để parse dần — đăng ký TRƯỚC listener 'load' bên dưới
+    // nên dòng cuối được parse xong (set result/errMsg) rồi mới tới nhánh resolve/reject.
+    readNdjson(xhr, (obj) => {
+      const line = obj as UploadLine;
+      if (line.type === 'progress') hooks.onStep(stepLabel(line));
+      else if (line.type === 'done') result = line.job;
+      else if (line.type === 'error') errMsg = line.message;
+    });
+
+    xhr.addEventListener('load', () => {
+      if (settled) return;
+      settled = true;
+      if (errMsg) reject(new Error(errMsg));
+      else if (result) resolve(result);
+      else reject(new Error('Máy chủ kết thúc bất thường (không nhận được kết quả).'));
+    });
+    xhr.addEventListener('error', () => {
+      if (settled) return;
+      settled = true;
+      reject(new Error('Lỗi mạng khi tải lên.'));
+    });
+    xhr.addEventListener('timeout', () => {
+      if (settled) return;
+      settled = true;
+      reject(new Error('Hết thời gian chờ tải lên.'));
+    });
+
+    xhr.send(fd);
+  });
+}
+
 export default function Home() {
   const router = useRouter();
   const { publish, reset } = useProject();
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [uploadPct, setUploadPct] = useState(0); // pha-1: % bytes tải lên
+  const [procStep, setProcStep] = useState<string | null>(null); // pha-2: nhãn bước xử lý (null = còn pha-1)
   const [jobId, setJobId] = useState<string | null>(null);
   const [items, setItems] = useState<ItemDTO[]>([]);
   const [context, setContext] = useState(''); // ngữ cảnh chương — tiêm vào vision + biên kịch
@@ -67,8 +144,13 @@ export default function Home() {
     }
     setBusy(true);
     setItems([]);
+    setUploadPct(0);
+    setProcStep(null);
     try {
-      const dto = await fetchJSON<JobStatusDTO>('/api/jobs', { method: 'POST', body: fd });
+      const dto = await uploadJob(fd, {
+        onUpload: (pct) => setUploadPct(pct),
+        onStep: (label) => setProcStep(label),
+      });
       setJobId(dto.jobId);
       setItems(dto.items); // thumbnail xem trước, đúng thứ tự đọc
       setContext(dto.context);
@@ -232,11 +314,18 @@ export default function Home() {
           >
             <CardContent className="py-10 text-center">
               <Upload className="mx-auto size-6 text-muted-foreground" aria-hidden />
-              <p className="mt-3 text-sm text-muted-foreground">
-                {busy
-                  ? 'Đang tải lên & xử lý ảnh…'
-                  : 'Kéo thả ảnh (đánh số 1.jpg, 2.jpg, …), file .zip hoặc .pdf vào đây'}
-              </p>
+              {busy ? (
+                <div className="mx-auto mt-3 max-w-sm">
+                  <p className="text-sm text-muted-foreground">
+                    {procStep ? `Đang xử lý: ${procStep}` : `Đang tải lên ${uploadPct}%`}
+                  </p>
+                  <Progress value={uploadPct} className="mt-3" />
+                </div>
+              ) : (
+                <p className="mt-3 text-sm text-muted-foreground">
+                  Kéo thả ảnh (đánh số 1.jpg, 2.jpg, …), file .zip hoặc .pdf vào đây
+                </p>
+              )}
               <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
                 <Button asChild>
                   <label className={cn('cursor-pointer', busy && 'pointer-events-none opacity-50')}>

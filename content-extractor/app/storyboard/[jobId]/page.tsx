@@ -13,6 +13,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { PageShell } from '@/components/page-shell';
 import { useProject } from '@/components/project-context';
 import { RegionCropper } from '@/components/region-cropper';
+import { useReducedMotion } from '@/components/use-reduced-motion';
 import { cn } from '@/lib/utils';
 import type {
   BeatDTO,
@@ -57,6 +58,14 @@ function phaseLabel(p: JobProgress): string {
   }
 }
 
+// ETA thô ước từ nhịp rpm — chỉ trấn an "còn bao lâu", KHÔNG cam kết chính xác
+// (vision latency biến thiên). Nhãn luôn kèm "~" để người dùng hiểu là ước lượng.
+function formatEta(remainingMs: number): string {
+  const totalSec = Math.max(1, Math.round(remainingMs / 1000));
+  if (totalSec < 60) return `~${totalSec} giây`;
+  return `~${Math.round(totalSec / 60)} phút`;
+}
+
 export default function StoryboardPage() {
   const { jobId } = useParams<{ jobId: string }>();
   const router = useRouter();
@@ -78,6 +87,8 @@ export default function StoryboardPage() {
   const [editedAfterScript, setEditedAfterScript] = useState(false);
   const esRef = useRef<EventSource | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const activeBeatRef = useRef<HTMLLIElement | null>(null); // nhịp đang chạy ở cột trái → scroll theo
+  const reducedMotion = useReducedMotion();
 
   function stopPolling() {
     if (pollRef.current) {
@@ -174,6 +185,17 @@ export default function StoryboardPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- chỉ chạy theo jobId
   }, [jobId]);
+
+  // Nhịp đang chạy đổi (SSE) → cuốn item cột trái vào tầm nhìn. Chỉ chạm DOM (scroll),
+  // không setState → khớp rule react-hooks/set-state-in-effect. Reduced-motion → nhảy tức thì.
+  const currentIndex = dto?.progress.currentIndex ?? null;
+  useEffect(() => {
+    if (currentIndex === null) return;
+    activeBeatRef.current?.scrollIntoView({
+      block: 'nearest',
+      behavior: reducedMotion ? 'auto' : 'smooth',
+    });
+  }, [currentIndex, reducedMotion]);
 
   const beats = dto ? [...dto.beats].sort((a, b) => a.order - b.order) : [];
   const selected = beats.find((b) => b.id === selectedBeat) ?? beats[0] ?? null;
@@ -381,6 +403,21 @@ export default function StoryboardPage() {
   const { progress } = dto;
   const running = progress.phase === 'queued' || progress.phase === 'processing';
   const pct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
+  // Nhãn giàu khi processing: số nhịp + % + ETA (ẩn ETA khi rpm≤0 / done≥total để tránh chia 0).
+  const remaining = progress.total - progress.done;
+  const etaVisible = progress.phase === 'processing' && rpm > 0 && remaining > 0;
+  const progressLabel =
+    progress.phase === 'processing'
+      ? `Đang soạn nhịp ${progress.done}/${progress.total} · ${pct}%${
+          etaVisible ? ` · còn ${formatEta((remaining * 60000) / rpm)}` : ''
+        }`
+      : phaseLabel(progress);
+  // Nhịp đang chạy (SSE currentIndex = beat.order). Narration thường rỗng khi đang soạn →
+  // fallback trỏ ảnh nguồn để người dùng vẫn định vị được.
+  const currentBeat =
+    progress.phase === 'processing' && progress.currentIndex !== null
+      ? beats.find((b) => b.order === progress.currentIndex)
+      : undefined;
   const ready = progress.phase === 'done' && beats.length > 0;
   const selectedWorking = selected
     ? dto.working.find((w) => w.sourceIndex === selected.sourceIndex)
@@ -439,7 +476,17 @@ export default function StoryboardPage() {
       {/* Tiến độ compose */}
       <Card className="py-4">
         <CardContent className="px-4">
-          <span className="text-sm font-medium">{phaseLabel(progress)}</span>
+          <span className="text-sm font-medium">{progressLabel}</span>
+          {currentBeat && (
+            <p className="mt-1 truncate text-xs text-muted-foreground">
+              Nhịp {currentBeat.order + 1}:{' '}
+              {currentBeat.narration.trim()
+                ? `“${currentBeat.narration.trim().slice(0, 60)}${
+                    currentBeat.narration.trim().length > 60 ? '…' : ''
+                  }”`
+                : `band #${currentBeat.sourceIndex + 1}`}
+            </p>
+          )}
           <Progress
             value={pct}
             className={cn(
@@ -477,8 +524,14 @@ export default function StoryboardPage() {
               {beats.map((beat, i) => {
                 const isSelected = selected?.id === beat.id;
                 const isBusy = rowBusy.has(beat.id);
+                const isActive =
+                  progress.phase === 'processing' && beat.order === progress.currentIndex;
                 return (
-                  <li key={beat.id} className="w-40 shrink-0 lg:w-auto">
+                  <li
+                    key={beat.id}
+                    ref={isActive ? activeBeatRef : undefined}
+                    className="w-40 shrink-0 lg:w-auto"
+                  >
                     <Card
                       role="button"
                       tabIndex={0}
@@ -492,6 +545,7 @@ export default function StoryboardPage() {
                       className={cn(
                         'cursor-pointer gap-0 py-2 shadow-none transition-colors hover:bg-muted/60',
                         isSelected && 'border-primary bg-muted/40',
+                        isActive && 'ring-2 ring-primary/60',
                       )}
                     >
                       <CardContent className="flex items-center gap-2.5 px-2.5">
