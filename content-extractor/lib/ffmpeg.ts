@@ -6,14 +6,35 @@ import type { SubtitleStyle } from './schema';
 // Wrapper ffmpeg/ffprobe qua child_process.spawn — không thêm dependency.
 // ffmpeg là system prerequisite: assertFfmpeg() báo lỗi hướng dẫn cài thay vì stack trace.
 
-export function runCommand(bin: string, args: string[]): Promise<string> {
+// AbortSignal → hủy render: child ffmpeg đang chạy bị kill (SIGKILL), lời gọi reject bằng
+// lỗi tên 'AbortError' để caller (route render) phân biệt "người hủy" với "render lỗi thật".
+export function abortError(message = 'Render bị hủy'): Error {
+  const err = new Error(message);
+  err.name = 'AbortError';
+  return err;
+}
+
+// signal (tùy chọn, param cuối) giữ chữ ký cũ tương thích — CLI không truyền vẫn chạy như trước.
+export function runCommand(bin: string, args: string[], signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
     const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
+    let aborted = false;
+    const onAbort = () => {
+      aborted = true;
+      child.kill('SIGKILL');
+    };
+    signal?.addEventListener('abort', onAbort);
+    const cleanup = () => signal?.removeEventListener('abort', onAbort);
     child.stdout.on('data', (d) => (stdout += d));
     child.stderr.on('data', (d) => (stderr += d));
     child.on('error', (err) => {
+      cleanup();
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         reject(
           new Error(`Không tìm thấy ${bin} — cài ffmpeg trước (macOS: brew install ffmpeg).`),
@@ -23,6 +44,12 @@ export function runCommand(bin: string, args: string[]): Promise<string> {
       }
     });
     child.on('close', (code) => {
+      cleanup();
+      // Child bị kill do abort → close code≠0; bọc thành AbortError thay vì "thoát mã null".
+      if (aborted) {
+        reject(abortError());
+        return;
+      }
       if (code === 0) resolve(stdout);
       else {
         // Đuôi stderr chứa lỗi thật của ffmpeg — cắt gọn cho dễ đọc.
@@ -49,16 +76,20 @@ export async function hasFilter(name: string): Promise<boolean> {
 }
 
 // Độ dài (giây) của file media — nguồn duy nhất cho cả TTS (P3) và render (P5).
-export async function probeDurationSec(filePath: string): Promise<number> {
-  const out = await runCommand('ffprobe', [
-    '-v',
-    'error',
-    '-show_entries',
-    'format=duration',
-    '-of',
-    'default=noprint_wrappers=1:nokey=1',
-    filePath,
-  ]);
+export async function probeDurationSec(filePath: string, signal?: AbortSignal): Promise<number> {
+  const out = await runCommand(
+    'ffprobe',
+    [
+      '-v',
+      'error',
+      '-show_entries',
+      'format=duration',
+      '-of',
+      'default=noprint_wrappers=1:nokey=1',
+      filePath,
+    ],
+    signal,
+  );
   const sec = Number.parseFloat(out.trim());
   if (!Number.isFinite(sec) || sec < 0) {
     throw new Error(`ffprobe không đọc được độ dài: ${filePath}`);
@@ -88,56 +119,54 @@ export async function renderShot(opts: {
   durationSec: number;
   fps: number;
   out: string;
+  signal?: AbortSignal;
 }): Promise<void> {
-  await runCommand('ffmpeg', [
-    '-y',
-    '-loop',
-    '1',
-    '-framerate',
-    String(opts.fps), // input t chạy đúng nhịp output → biểu thức pan theo t không judder
-    '-i',
-    opts.image,
-    '-filter_complex',
-    opts.filter,
-    '-map',
-    '[v]',
-    '-t',
-    opts.durationSec.toFixed(3),
-    '-r',
-    String(opts.fps),
-    '-c:v',
-    'libx264',
-    '-preset',
-    'veryfast',
-    '-pix_fmt',
-    'yuv420p',
-    opts.out,
-  ]);
+  await runCommand(
+    'ffmpeg',
+    [
+      '-y',
+      '-loop',
+      '1',
+      '-framerate',
+      String(opts.fps), // input t chạy đúng nhịp output → biểu thức pan theo t không judder
+      '-i',
+      opts.image,
+      '-filter_complex',
+      opts.filter,
+      '-map',
+      '[v]',
+      '-t',
+      opts.durationSec.toFixed(3),
+      '-r',
+      String(opts.fps),
+      '-c:v',
+      'libx264',
+      '-preset',
+      'veryfast',
+      '-pix_fmt',
+      'yuv420p',
+      opts.out,
+    ],
+    opts.signal,
+  );
 }
 
 // ==== Ghép cuối (P6) ====
 
 // Nối các shot bằng concat demuxer — mọi shot đã chuẩn hoá cùng codec/fps/size/pix_fmt
 // từ renderShot nên copy thẳng, không re-encode.
-export async function concatVideo(shotFiles: string[], out: string): Promise<void> {
+export async function concatVideo(shotFiles: string[], out: string, signal?: AbortSignal): Promise<void> {
   const listPath = `${out}.list.txt`;
   // concat demuxer cần đường dẫn escape quote đơn.
   const list = shotFiles
     .map((f) => `file '${path.resolve(f).replace(/'/g, "'\\''")}'`)
     .join('\n');
   await writeFile(listPath, list);
-  await runCommand('ffmpeg', [
-    '-y',
-    '-f',
-    'concat',
-    '-safe',
-    '0',
-    '-i',
-    listPath,
-    '-c',
-    'copy',
-    out,
-  ]);
+  await runCommand(
+    'ffmpeg',
+    ['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', out],
+    signal,
+  );
 }
 
 // Dựng track narration dài totalSec: mỗi seg audio đặt tại đúng start_seg (adelay),
@@ -147,18 +176,23 @@ export async function buildAudioTrack(
   segAudio: Array<{ path: string; startSec: number }>,
   totalSec: number,
   out: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   if (segAudio.length === 0) {
-    await runCommand('ffmpeg', [
-      '-y',
-      '-f',
-      'lavfi',
-      '-i',
-      `anullsrc=r=44100:cl=stereo:d=${totalSec.toFixed(3)}`,
-      '-c:a',
-      'pcm_s16le',
-      out,
-    ]);
+    await runCommand(
+      'ffmpeg',
+      [
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        `anullsrc=r=44100:cl=stereo:d=${totalSec.toFixed(3)}`,
+        '-c:a',
+        'pcm_s16le',
+        out,
+      ],
+      signal,
+    );
     return;
   }
   const args: string[] = ['-y'];
@@ -187,7 +221,7 @@ export async function buildAudioTrack(
     'pcm_s16le',
     out,
   );
-  await runCommand('ffmpeg', args);
+  await runCommand('ffmpeg', args, signal);
 }
 
 // Trộn BGM dưới narration với sidechain ducking: BGM hạ khi có lời (sidechaincompress),
@@ -198,31 +232,36 @@ export async function duckBgm(
   opts: { volume: number; duckDb: number },
   totalSec: number,
   out: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   // Map duckDb → ratio nén: -6dB → 4, -12dB → 8, -18dB → 12 (kẹp 2..20).
   const ratio = Math.max(2, Math.min(20, Math.abs(opts.duckDb) * (2 / 3)));
-  await runCommand('ffmpeg', [
-    '-y',
-    '-i',
-    narrationTrack,
-    '-stream_loop',
-    '-1',
-    '-i',
-    bgmPath,
-    '-filter_complex',
+  await runCommand(
+    'ffmpeg',
     [
-      `[1:a]atrim=0:${totalSec.toFixed(3)},aresample=44100,aformat=channel_layouts=stereo,volume=${opts.volume}[bgm]`,
-      `[bgm][0:a]sidechaincompress=threshold=0.02:ratio=${ratio.toFixed(2)}:attack=20:release=400[ducked]`,
-      `[0:a][ducked]amix=inputs=2:normalize=0[aout]`,
-    ].join(';'),
-    '-map',
-    '[aout]',
-    '-t',
-    totalSec.toFixed(3),
-    '-c:a',
-    'pcm_s16le',
-    out,
-  ]);
+      '-y',
+      '-i',
+      narrationTrack,
+      '-stream_loop',
+      '-1',
+      '-i',
+      bgmPath,
+      '-filter_complex',
+      [
+        `[1:a]atrim=0:${totalSec.toFixed(3)},aresample=44100,aformat=channel_layouts=stereo,volume=${opts.volume}[bgm]`,
+        `[bgm][0:a]sidechaincompress=threshold=0.02:ratio=${ratio.toFixed(2)}:attack=20:release=400[ducked]`,
+        `[0:a][ducked]amix=inputs=2:normalize=0[aout]`,
+      ].join(';'),
+      '-map',
+      '[aout]',
+      '-t',
+      totalSec.toFixed(3),
+      '-c:a',
+      'pcm_s16le',
+      out,
+    ],
+    signal,
+  );
 }
 
 // #rrggbb → &HAABBGGRR (ASS, alpha 00 = đục).
@@ -249,6 +288,7 @@ export async function burnSubs(
   style: SubtitleStyle,
   out: string,
   fontsDir?: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const playResY = 288;
   const fontSize = Math.max(8, Math.round((style.sizePct / 100) * playResY));
@@ -271,40 +311,32 @@ export async function burnSubs(
   const filter =
     `subtitles=filename='${escapeFilterPath(srtPath)}':force_style='${forceStyle}'` +
     (dir ? `:fontsdir='${escapeFilterPath(dir)}'` : '');
-  await runCommand('ffmpeg', [
-    '-y',
-    '-i',
-    video,
-    '-vf',
-    filter,
-    '-c:v',
-    'libx264',
-    '-preset',
-    'veryfast',
-    '-pix_fmt',
-    'yuv420p',
-    '-an',
-    out,
-  ]);
+  await runCommand(
+    'ffmpeg',
+    [
+      '-y',
+      '-i',
+      video,
+      '-vf',
+      filter,
+      '-c:v',
+      'libx264',
+      '-preset',
+      'veryfast',
+      '-pix_fmt',
+      'yuv420p',
+      '-an',
+      out,
+    ],
+    signal,
+  );
 }
 
 // Ghép video + audio → MP4 cuối (video copy, audio AAC).
-export async function mux(video: string, audio: string, out: string): Promise<void> {
-  await runCommand('ffmpeg', [
-    '-y',
-    '-i',
-    video,
-    '-i',
-    audio,
-    '-map',
-    '0:v',
-    '-map',
-    '1:a',
-    '-c:v',
-    'copy',
-    '-c:a',
-    'aac',
-    '-shortest',
-    out,
-  ]);
+export async function mux(video: string, audio: string, out: string, signal?: AbortSignal): Promise<void> {
+  await runCommand(
+    'ffmpeg',
+    ['-y', '-i', video, '-i', audio, '-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', '-shortest', out],
+    signal,
+  );
 }

@@ -3,11 +3,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { Package, Pause, Play, Sparkles } from 'lucide-react';
+import { ChevronDown, Download, Film, Package, Pause, Play, Sparkles, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
+import { Progress } from '@/components/ui/progress';
 import {
   Select,
   SelectContent,
@@ -20,6 +29,7 @@ import { Switch } from '@/components/ui/switch';
 import { PageShell } from '@/components/page-shell';
 import { useProject } from '@/components/project-context';
 import { useReducedMotion } from '@/components/use-reduced-motion';
+import { readNdjsonBody } from '@/lib/ndjson-client';
 import type { RenderConfig, ScriptDTO, StoryboardDTO } from '@/lib/schema';
 import { defaultRenderConfig } from '@/lib/schema';
 import { planKenburns } from '@/lib/kenburns';
@@ -27,13 +37,32 @@ import { ASPECT_CSS, kenburnsFrameStyle } from '@/lib/kenburns-css';
 import { allocateCaptions, buildTimeline, splitSentences, TIMELINE_DEFAULTS } from '@/lib/timeline';
 import { TTS_PROVIDER_OPTIONS } from '@/lib/tts-providers/catalog';
 
+// Dòng NDJSON từ route render — khai type ở client (không import runtime Node của lib/render.ts
+// vào bundle trình duyệt). Progress phase + dòng done (kèm URL results.zip) + dòng error.
+type RenderLine =
+  | { phase: 'tts' | 'timeline' | 'shot' | 'concat' | 'audio' | 'bgm' | 'subs' | 'mux'; i?: number; n?: number }
+  | { done: true; totalSec: number; downloads: { zip: string } }
+  | { error: string };
+
+// Nhãn tiếng Việt cho từng pha render (shot ghép thêm i/n động).
+const RENDER_PHASE_LABEL: Record<string, string> = {
+  tts: 'Tổng hợp giọng',
+  timeline: 'Dựng timeline',
+  concat: 'Ghép cảnh',
+  audio: 'Trộn tiếng',
+  bgm: 'Trộn nhạc nền',
+  subs: 'Khắc phụ đề',
+  mux: 'Đóng gói MP4',
+};
+
 // Sentinel dropdown provider: Radix Select cấm value="" — dùng 'env' đại diện "Theo ENV",
 // map về '' khi lưu (rỗng = lấy TTS_PROVIDER lúc synth).
 const TTS_PROVIDER_ENV = 'env';
 
 // Preview UI video (Stage 2): phát duyệt kịch bản dạng video — Ken Burns XẤP XỈ bằng CSS,
 // phụ đề chỉnh live, BGM + khung hình. Hai chế độ: im lặng (durationHint, free) và có audio
-// (synth TTS → timing thật). MP4 từ CLI render mới là chân lý.
+// (synth TTS → timing thật). MP4 do engine render (in-app "Render MP4" hoặc CLI, chung
+// lib/render.ts) mới là chân lý — preview CSS chỉ xấp xỉ.
 
 async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -65,6 +94,11 @@ export default function VideoPreviewPage() {
   const [audioMode, setAudioMode] = useState(false);
   const [synthBusy, setSynthBusy] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
+  const [renderBusy, setRenderBusy] = useState(false);
+  const [renderPhase, setRenderPhase] = useState<string | null>(null);
+  const [renderProgress, setRenderProgress] = useState<{ i: number; n: number } | null>(null);
+  const [renderZipUrl, setRenderZipUrl] = useState<string | null>(null);
+  const renderAcRef = useRef<AbortController | null>(null);
   const [bgmFile, setBgmFile] = useState<File | null>(null);
   const [bgmUrl, setBgmUrl] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -258,6 +292,80 @@ export default function VideoPreviewPage() {
     }
   }
 
+  // Tải file qua thẻ <a download> (results.zip là attachment từ output route). 1 file → không lo
+  // trình duyệt chặn multi-download.
+  function triggerDownload(url: string) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  // Render MP4 server-side: POST multipart (config + bgm) → đọc NDJSON progress → khi done tự tải
+  // results.zip. Hủy giữa chừng bằng renderAcRef (abort fetch → server kill ffmpeg).
+  async function renderVideo() {
+    const ac = new AbortController();
+    renderAcRef.current = ac;
+    setRenderBusy(true);
+    setRenderPhase(null);
+    setRenderProgress(null);
+    setRenderZipUrl(null);
+    let hadError: string | null = null;
+    try {
+      const fd = new FormData();
+      fd.append('config', JSON.stringify(config));
+      if (bgmFile) fd.append('bgm', bgmFile);
+      const res = await fetch(`/api/jobs/${jobId}/storyboard/render`, {
+        method: 'POST',
+        body: fd,
+        signal: ac.signal,
+      });
+      if (res.status === 409) {
+        toast.error('Đang render job này — đợi lượt hiện tại xong.');
+        return;
+      }
+      if (!res.ok || !res.body) {
+        const data = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(data?.error ?? `Lỗi HTTP ${res.status}`);
+      }
+      await readNdjsonBody(res.body, (line) => {
+        const ev = line as RenderLine;
+        if ('error' in ev) {
+          hadError = ev.error;
+          return;
+        }
+        if ('done' in ev) {
+          setRenderZipUrl(ev.downloads.zip);
+          triggerDownload(ev.downloads.zip);
+          return;
+        }
+        setRenderPhase(ev.phase);
+        // tts + shot mang i/n → thanh tiến trình; các pha còn lại giữ mức cũ.
+        if ((ev.phase === 'shot' || ev.phase === 'tts') && typeof ev.i === 'number' && typeof ev.n === 'number') {
+          setRenderProgress({ i: ev.i, n: ev.n });
+        }
+      });
+      if (hadError) toast.error(hadError);
+      else toast.success('Render xong — results.zip (MP4 + .srt + .timeline) đang tải về.');
+    } catch (err) {
+      // Người dùng bấm Hủy → fetch abort ném AbortError: nuốt, không toast lỗi giả.
+      if (!(err instanceof Error && err.name === 'AbortError')) {
+        toast.error(err instanceof Error ? err.message : 'Render thất bại');
+      }
+    } finally {
+      setRenderBusy(false);
+      setRenderPhase(null);
+      setRenderProgress(null);
+      renderAcRef.current = null;
+    }
+  }
+
+  function cancelRender() {
+    renderAcRef.current?.abort();
+  }
+
   if (loadError) {
     return (
       <PageShell title="Dựng video">
@@ -347,20 +455,41 @@ export default function VideoPreviewPage() {
   return (
     <PageShell
       title="Dựng video"
-      subtitle="Preview XẤP XỈ (CSS) để duyệt bố cục/timing/style — file MP4 do CLI render mới là bản chuẩn."
+      subtitle="Preview XẤP XỈ (CSS) để duyệt bố cục/timing/style — bấm Render MP4 để dựng bản chuẩn (engine ffmpeg, chung với CLI)."
       actions={
         <>
-          <Button variant="ai" onClick={synthAudio} disabled={synthBusy}>
+          <Button variant="ai" onClick={synthAudio} disabled={synthBusy || renderBusy}>
             <Sparkles data-icon="inline-start" />
             {synthBusy ? 'Đang synth…' : audioMode ? 'Synth lại audio' : 'Synth audio (timing thật)'}
           </Button>
-          <Button variant="success" onClick={exportBundle} disabled={exportBusy}>
-            <Package data-icon="inline-start" />
-            {exportBusy ? 'Đang đóng gói…' : 'Export để render'}
+          <Button onClick={renderVideo} disabled={renderBusy}>
+            <Film data-icon="inline-start" />
+            {renderBusy ? 'Đang render…' : 'Render MP4'}
           </Button>
           <Button variant="outline" onClick={() => router.push(`/script/${jobId}`)}>
             Kịch bản
           </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline">
+                Nâng cao
+                <ChevronDown data-icon="inline-end" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-72">
+              <DropdownMenuItem onSelect={() => void exportBundle()} disabled={exportBusy}>
+                <Package />
+                {exportBusy ? 'Đang đóng gói…' : 'Export bundle zip (render máy khác / batch)'}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel className="font-normal">Hoặc render bằng CLI:</DropdownMenuLabel>
+              <div className="px-1.5 pb-1">
+                <code className="block rounded bg-muted px-1 py-0.5 text-[11px] break-all">
+                  npm run render -- bundle-{jobId}.zip --aspect {config.aspect}
+                </code>
+              </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </>
       }
     >
@@ -455,6 +584,37 @@ export default function VideoPreviewPage() {
             {currentShot && ` · band #${currentShot.sourceIndex + 1}`}
             {reducedMotion && ' · (giảm chuyển động theo cài đặt hệ thống)'}
           </p>
+
+          {/* Tiến trình render server-side (theo shot) + nút Hủy */}
+          {renderBusy && (
+            <div className="mt-3 space-y-2 rounded-lg border border-border bg-card/50 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs font-medium">
+                  {renderPhase === 'shot' && renderProgress
+                    ? `Render cảnh ${renderProgress.i}/${renderProgress.n}`
+                    : renderPhase
+                      ? (RENDER_PHASE_LABEL[renderPhase] ?? renderPhase)
+                      : 'Chuẩn bị…'}
+                </span>
+                <Button size="xs" variant="outline" onClick={cancelRender}>
+                  <X data-icon="inline-start" />
+                  Hủy
+                </Button>
+              </div>
+              <Progress
+                value={renderProgress ? Math.round((renderProgress.i / renderProgress.n) * 100) : 0}
+              />
+            </div>
+          )}
+          {!renderBusy && renderZipUrl && (
+            <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
+              <span>Đã render xong.</span>
+              <Button size="xs" variant="outline" onClick={() => triggerDownload(renderZipUrl)}>
+                <Download data-icon="inline-start" />
+                Tải lại results.zip
+              </Button>
+            </div>
+          )}
 
           <audio ref={narrationAudioRef} hidden />
           {bgmUrl && <audio ref={bgmAudioRef} src={bgmUrl} loop hidden />}
@@ -706,10 +866,10 @@ export default function VideoPreviewPage() {
           </Card>
 
           <p className="text-xs text-muted-foreground/70">
-            Sau khi Export: chạy{' '}
-            <code className="rounded bg-muted px-1">
-              npm run render -- bundle-{jobId}.zip --aspect {config.aspect}
-            </code>
+            Bấm <span className="font-medium text-foreground">Render MP4</span> để dựng video ngay
+            tại đây — xong tự tải <code className="rounded bg-muted px-1">results.zip</code> (MP4 +
+            .srt + .timeline.json). Export bundle zip / CLI nằm ở menu &ldquo;Nâng cao&rdquo; (render
+            máy khác hoặc batch).
           </p>
         </aside>
       </div>

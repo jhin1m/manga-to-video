@@ -13,7 +13,9 @@ export interface NdjsonStream {
   close: () => void;
 }
 
-export function createNdjsonStream(): NdjsonStream {
+// onCancel: gọi khi client đóng kết nối (fetch abort / đóng tab) → route render dùng để
+// AbortController.abort() kill ffmpeg + gỡ lock. Tùy chọn, giữ chữ ký cũ tương thích.
+export function createNdjsonStream(opts?: { onCancel?: () => void }): NdjsonStream {
   const encoder = new TextEncoder();
   let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
   let closed = false;
@@ -23,8 +25,9 @@ export function createNdjsonStream(): NdjsonStream {
       controller = c;
     },
     cancel() {
-      // Client abort → dừng ghi tiếp (write thành no-op).
+      // Client abort → dừng ghi tiếp (write thành no-op) + báo route để hủy công việc nền.
       closed = true;
+      opts?.onCancel?.();
     },
   });
 

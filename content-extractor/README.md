@@ -115,9 +115,10 @@ Không bắt buộc Generate all trước khi tạo kịch bản: nhịp chưa G
 1. Ở trang **`/script/{jobId}`** (mở qua stepper khi storyboard xong), bấm **"Tạo kịch bản AI"** → model text đọc content mọi band (band thiếu content được vision fallback tự mô tả, lỗi cô lập) → đề xuất `ScriptSegment[]` (gộp band liền kề / tách band dày).
 2. Duyệt kịch bản: **sửa narration inline · gộp với đoạn dưới · tách tại biên shot (✂) · re-order (▲▼) · xoá**. Band bỏ sót có cảnh báo count-mismatch. Không ưng → **"Tạo lại kịch bản"**.
 3. **"Xác nhận kịch bản"** → mở nút **"Dựng video"** → `/video/{jobId}` (sửa đoạn nào sau đó phải xác nhận lại).
-4. Trang preview: phát duyệt Ken Burns **xấp xỉ CSS** (nói rõ trên UI — MP4 từ CLI mới là chân lý), chỉnh **phụ đề (font/cỡ/màu/vị trí/lề) live**, **khung hình 9:16 · 16:9 · 1:1**, **BGM** (file + volume + duck), zoom. Hai chế độ: **im lặng** (durationHint, free) ↔ **"Synth audio"** (ElevenLabs → timing thật, nghe được; vào cache đĩa).
-5. **"Export để render"** → tải `bundle-{jobId}.zip` (manifest + ảnh band + render-config + audio đã synth + BGM).
-6. Render MP4:
+4. Trang preview: phát duyệt Ken Burns **xấp xỉ CSS** (nói rõ trên UI — MP4 do engine render mới là chân lý, preview chỉ xấp xỉ), chỉnh **phụ đề (font/cỡ/màu/vị trí/lề) live**, **khung hình 9:16 · 16:9 · 1:1**, **BGM** (file + volume + duck), zoom. Hai chế độ: **im lặng** (durationHint, free) ↔ **"Synth audio"** (ElevenLabs → timing thật, nghe được; vào cache đĩa).
+5. **Render MP4 (đường chính — 1 nút):** bấm **"Render MP4"** ở stage video → engine ffmpeg chạy **server-side** đọc thẳng store RAM, stream tiến trình theo shot (thanh progress + "Render cảnh i/N"), xong **tự tải `results-{jobId}-{aspect}.zip`** (chứa `output.mp4` + `.srt` + `.timeline.json`). Có nút **Hủy** (kill ffmpeg) + khóa **1-render/job** (bấm lần 2 khi đang chạy → 409). Không chạm terminal. Engine dùng chung `lib/render.ts` với CLI nên MP4 in-app **khớp** MP4 CLI.
+6. **Nâng cao (render máy khác / batch)** — menu "Nâng cao" ở stage video:
+   - **Export bundle zip** → tải `bundle-{jobId}.zip` (manifest + ảnh band + render-config + audio đã synth + BGM) rồi render bằng CLI:
    ```bash
    npm run render -- bundle-<jobId>.zip --aspect 9:16 --out out.mp4
    npm run render -- bundle-<jobId>.zip --dry-run     # chỉ timeline.json + .srt, không TTS/ffmpeg
@@ -173,6 +174,8 @@ Không bắt buộc Generate all trước khi tạo kịch bản: nhịp chưa G
 | GET | `/api/jobs/{id}/storyboard/tts/{segId}/audio` | stream mp3 từ cache (preview "có audio") |
 | GET | `/api/jobs/{id}/storyboard/export-bundle` | bundle.zip (config qua `?config=<json>`) |
 | POST | `/api/jobs/{id}/storyboard/export-bundle` | multipart `config` + file `bgm` → bundle.zip kèm BGM + audio đã synth (audio stale theo narration bị loại) |
+| POST | `/api/jobs/{id}/storyboard/render` | multipart `config` + file `bgm` → **NDJSON stream** tiến trình render (theo shot) → dòng cuối `{done, downloads.zip}`. Đọc store RAM → `renderVideo` (chung engine CLI) → ghi `.render/{id}-{aspect}/` + gói `results.zip`. Khóa 1-render/job (409). Client đóng kết nối → kill ffmpeg + gỡ khóa |
+| GET | `/api/jobs/{id}/storyboard/render/output?file=zip&aspect=<slug>` | serve `results-{id}-{aspect}.zip` (MP4 + .srt + .timeline.json). Whitelist file/aspect/id chống path traversal; thiếu → 404 |
 
 ## Manifest (nội bộ `.mtvproj` — không còn route export riêng)
 
@@ -252,19 +255,23 @@ Nằm trong `.mtvproj` (`manifest.json`) để round-trip Lưu/Mở project. `co
 - `lib/bundle.ts` — đóng/mở bundle.zip (manifest + render-config + band + audio + bgm), validate version + band khớp shots.
 - `lib/timeline.ts` — **thuần, dùng chung UI+CLI**: `buildTimeline` (audio nhạc trưởng, sàn, phân bổ shot theo weight), `splitSentences`/`allocateCaptions`/`toSrt` (caption tách theo câu, canh giờ tỉ lệ ký tự), `toTimelineJson`.
 - `lib/kenburns.ts` — **thuần**: suy hướng pan/zoom từ region+aspect, blur-fill khi lệch tỉ lệ, kẹp vận tốc pan → chuỗi filtergraph ffmpeg.
-- `lib/ffmpeg.ts` — wrapper spawn (không thêm dep): assert/probe/renderShot/concat/audio-track/duck (sidechain)/burn subs (libass, degrade khi thiếu)/mux.
-- `scripts/render-video.mts` — CLI render (nguồn chân lý): bundle → TTS (cache) → timeline → Ken Burns per shot → concat + BGM duck + burn → MP4 + .srt + timeline.json; `--dry-run` không gọi TTS/ffmpeg.
+- `lib/ffmpeg.ts` — wrapper spawn (không thêm dep): assert/probe/renderShot/concat/audio-track/duck (sidechain)/burn subs (libass, degrade khi thiếu)/mux. Nhận `AbortSignal` (optional) → kill child ffmpeg khi hủy.
+- `lib/render.ts` — **orchestration render dùng chung** (source-agnostic): `renderVideo(input, opts)` chạy TTS (cache) → timeline → Ken Burns per shot → concat + BGM duck + burn → MP4 + .srt + timeline.json. `onProgress` phát `RenderEvent` theo mốc; `signal` hủy giữa chừng. CLI **và** route in-app đều là client mỏng của hàm này.
+- `lib/storyboard-render-input.ts` — đọc store RAM → dữ liệu render (dùng chung export-bundle + route render): `buildBundle`/`collectAudio`/`parseConfig`/`parseRenderForm`.
+- `lib/render-lock.ts` — khóa 1-render/job (`Map<jobId, AbortController>` trên globalThis).
+- `scripts/render-video.mts` — CLI render: client mỏng của `lib/render.ts` — parse args + dựng `RenderInput` từ bundle + map `RenderEvent` → log; `--dry-run` không gọi TTS/ffmpeg.
 
 **Routes & UI:**
 - `app/api/jobs/**` — route job (POST upload / GET / PATCH context / DELETE item / GET image).
 - `app/api/jobs/{id}/storyboard**` — route storyboard (POST create + generate-all / PATCH+DELETE beat / POST generate-retry-reorder / GET crop-stream-working).
 - `app/api/jobs/{id}/storyboard/script**`, `tts**`, `export-bundle` — route Stage 2 (kịch bản + TTS + bundle).
+- `app/api/jobs/{id}/storyboard/render` (+ `render/output`) — render MP4 in-app: POST stream NDJSON tiến trình → `results.zip`; GET serve zip. Khóa 1-render/job + Cancel qua AbortController.
 - `app/api/project/export|import` — file project `.mtvproj` (lưu/mở cả phiên làm việc, `lib/project.ts`).
 - `app/layout.tsx` + `components/app-shell.tsx` — app shell chung (top bar Lưu/Mở project + stepper 3 bước Storyboard→Kịch bản→Video + theme toggle + toast); token shadcn/ui trong `app/globals.css`.
 - `app/page.tsx` — UI Nhận chapter: upload (gộp + chia band) → xem trước lưới band + xoá band + ngữ cảnh chương → Tạo storyboard.
 - `app/storyboard/[jobId]/page.tsx` — UI storyboard master–detail: Generate all (batch vision + RPM), list nhịp (trái) + chi tiết nhịp (phải) với chọn vùng kéo-thả (`components/region-cropper.tsx`), Generate ✨ per-beat, reorder.
 - `app/script/[jobId]/page.tsx` — trang Kịch bản AI: duyệt/gộp/tách/sửa/chốt → Dựng video.
-- `app/video/[jobId]/page.tsx` — Preview UI video: player Ken Burns CSS xấp xỉ + caption theo câu + panel khung hình/phụ đề/BGM/TTS → Synth audio → Export bundle.
+- `app/video/[jobId]/page.tsx` — Preview UI video: player Ken Burns CSS xấp xỉ + caption theo câu + panel khung hình/phụ đề/BGM/TTS → Synth audio → **Render MP4** (server-side, progress theo shot + Hủy, tự tải results.zip); Export bundle zip + CLI hint trong menu "Nâng cao".
 
 ## Kiểm thử
 
@@ -304,6 +311,6 @@ Test scripts: `content-extractor/scripts/` (`verify-ingest.mts`, `verify-banding
 - **Xoá band sau khi đã tạo storyboard:** Storyboard là snapshot lúc tạo — xoá band ở lưới upload KHÔNG cập nhật ngược storyboard đã có (working buffer giữ bằng tham chiếu nên không lỗi). Bấm "Tạo storyboard" lại để đồng bộ.
 - **PDF trong zip:** Bỏ qua (chỉ nhận PDF upload trực tiếp).
 - **UI beat:** chọn vùng bằng kéo-vẽ khung + kéo-di chuyển; **resize handle 4 góc chưa có** — chỉnh kích thước qua vẽ lại hoặc numeric "Nâng cao".
-- **Preview ≠ render:** Ken Burns CSS ở `/video/{jobId}` là xấp xỉ (duyệt bố cục/timing/style); MP4 từ CLI là chân lý. UI có ghi chú rõ.
-- **Burn-in cần libass:** Bản ffmpeg build thiếu libass (vd bottle slim) → CLI cảnh báo, bỏ burn-in, vẫn xuất `.srt` rời.
+- **Preview ≠ render:** Ken Burns CSS ở `/video/{jobId}` là xấp xỉ (duyệt bố cục/timing/style); MP4 do engine render (**in-app "Render MP4"** hoặc CLI, chung `lib/render.ts`) mới là chân lý. UI có ghi chú rõ.
+- **Burn-in cần libass:** Bản ffmpeg build thiếu libass (vd bottle slim) → engine cảnh báo, bỏ burn-in, vẫn xuất `.srt` rời.
 - **Ngoài scope vòng sau:** transition giữa shot · multi-voice · nhạc theo cảm xúc · batch cả bộ · preview render-accurate (WebGL) · nhiều track BGM · AI tự chọn nhạc.
