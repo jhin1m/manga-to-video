@@ -256,15 +256,34 @@ export interface ScriptDTO {
 
 export type Aspect = '9:16' | '16:9' | '1:1';
 
+// Kiểu viền/nền của chữ — map thẳng sang BorderStyle của ASS:
+// 'outline' = BorderStyle 1 có viền · 'none' = BorderStyle 1 với Outline 0 · 'box' = BorderStyle 3.
+export type SubtitleBorder = 'none' | 'outline' | 'box';
+
 export interface SubtitleStyle {
   export: boolean; // luôn xuất .srt rời
   burnIn: boolean; // cháy chữ vào video
-  font: string;
+  font: string; // family name (khớp tên bên trong file font — libass match theo family)
   sizePct: number; // % chiều cao khung hình
   color: string; // hex #rrggbb
-  outline: boolean;
+  opacity: number; // 0..1 — độ đục của chữ
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+  uppercase: boolean; // biến đổi lúc sinh cue (không có field ASS tương ứng)
+  letterSpacing: number; // giãn ký tự, đơn vị theo PlayResY 288
+  border: SubtitleBorder;
+  outlineWidth: number; // 0..4 — độ dày viền; ở mode 'box' là phần đệm quanh chữ
+  // LƯU Ý (đã đo bằng libass): OutlineColour vừa là màu VIỀN (BorderStyle 1) vừa là màu HỘP
+  // (BorderStyle 3). Vì vậy chỉ có MỘT cặp màu/độ mờ dùng cho cả hai mode.
+  outlineColor: string;
+  outlineOpacity: number; // 0..1
+  shadowDepth: number; // 0..4 — độ lệch bóng
+  shadowColor: string; // BackColour
   position: 'top' | 'middle' | 'bottom';
   marginPct: number; // % chiều cao khung tính từ mép theo position
+  sideMarginPct: number; // % chiều RỘNG khung, áp cho cả lề trái lẫn phải
+  maxCharsPerLine: number; // 0 = không ngắt dòng thủ công
 }
 
 export interface RenderConfig {
@@ -280,7 +299,10 @@ export interface RenderConfig {
   segmentOverrides?: Record<string, { durationSec?: number }>;
 }
 
-export const RENDER_CONFIG_VERSION = 1;
+// v2: SubtitleStyle mở rộng (viền/bóng/nền hộp/kiểu chữ/lề ngang/wrap). Config v1 vẫn đọc
+// được — migrateSubtitleStyle trong lib/subtitle-style.ts quy đổi `outline: boolean` sang
+// `border` + `outlineWidth`.
+export const RENDER_CONFIG_VERSION = 2;
 
 export function defaultRenderConfig(): RenderConfig {
   return {
@@ -293,9 +315,22 @@ export function defaultRenderConfig(): RenderConfig {
       font: 'Be Vietnam Pro',
       sizePct: 4.5,
       color: '#ffffff',
-      outline: true,
+      opacity: 1,
+      bold: false,
+      italic: false,
+      underline: false,
+      uppercase: false,
+      letterSpacing: 0,
+      border: 'outline',
+      outlineWidth: 2,
+      outlineColor: '#000000',
+      outlineOpacity: 1,
+      shadowDepth: 0,
+      shadowColor: '#000000',
       position: 'bottom',
       marginPct: 8,
+      sideMarginPct: 6,
+      maxCharsPerLine: 0,
     },
     bgm: { path: null, volume: 0.3, duckDb: -12 },
     tts: { provider: '', voiceId: '', model: '' }, // rỗng = lấy từ ENV (TTS_PROVIDER + ELEVENLABS_*) lúc synth

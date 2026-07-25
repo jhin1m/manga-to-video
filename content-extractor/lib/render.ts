@@ -17,10 +17,10 @@ import {
   burnSubs,
   concatVideo,
   duckBgm,
-  hasFilter,
   mux,
   probeDurationSec,
   renderShot,
+  resolveSubtitleBin,
 } from './ffmpeg';
 import { kenburns } from './kenburns';
 import type { RenderConfig, ScriptManifest } from './schema';
@@ -154,7 +154,7 @@ export async function renderVideo(input: RenderInput, opts: RenderOptions): Prom
 
   // ==== Timeline + srt + timeline.json (luôn xuất) ====
   const timeline = buildTimeline(segments, segDurations, config);
-  const srt = toSrt(timeline, segments);
+  const srt = toSrt(timeline, segments, config.subtitles);
   await mkdir(path.dirname(path.resolve(srtPath)), { recursive: true });
   await writeFile(srtPath, srt);
   await writeFile(timelinePath, JSON.stringify(toTimelineJson(timeline, segments), null, 2));
@@ -247,14 +247,23 @@ export async function renderVideo(input: RenderInput, opts: RenderOptions): Prom
   // .srt rời LUÔN được giữ (kể cả mode burn) — hợp đồng "luôn xuất .srt".
   let videoPath = silentPath;
   if (subsMode === 'burn' || subsMode === 'both') {
-    if (await hasFilter('subtitles')) {
+    // Binary riêng cho burn: bản chính thiếu libass thì tự rơi xuống bundled (ffmpeg-static).
+    const subBin = await resolveSubtitleBin();
+    if (subBin) {
       const burnedPath = path.join(workDir, 'burned.mp4');
       onProgress?.({ phase: 'subs' });
-      await burnSubs(silentPath, srtPath, config.subtitles, burnedPath, undefined, signal);
+      await burnSubs({
+        bin: subBin,
+        video: silentPath,
+        srtPath,
+        style: config.subtitles,
+        out: burnedPath,
+        signal,
+      });
       videoPath = burnedPath;
     } else {
       console.warn(
-        '[render] CẢNH BÁO: bản ffmpeg này thiếu filter subtitles (libass) — bỏ qua burn-in, dùng .srt rời. Cài bản đầy đủ: brew install ffmpeg (bottle chính thức có libass).',
+        '[render] CẢNH BÁO: không nguồn ffmpeg nào (PATH lẫn bundled) có filter subtitles (libass) — bỏ qua burn-in, dùng .srt rời. Cài bản đầy đủ: brew install ffmpeg (bottle chính thức có libass).',
       );
     }
   }

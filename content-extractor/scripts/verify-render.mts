@@ -10,7 +10,13 @@ import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { writeBundle } from '../lib/bundle';
-import { assertFfmpeg, hasFilter, probeDurationSec, probeStreams, runFfmpeg } from '../lib/ffmpeg';
+import {
+  assertFfmpeg,
+  probeDurationSec,
+  probeStreams,
+  resolveSubtitleBin,
+  runFfmpeg,
+} from '../lib/ffmpeg';
 import type { ScriptSegment } from '../lib/schema';
 import { defaultRenderConfig, toScriptManifest } from '../lib/schema';
 import { createMockElevenLabs } from './mock-elevenlabs.mjs';
@@ -154,11 +160,15 @@ console.log('D. Render 16:9 + BGM + burn-in — cùng bundle, TTS cache HIT');
   eq(mock.requestCount(), 3, 'cache HIT — không gọi ElevenLabs thêm (vẫn 3)');
   ok(r.out.includes('cache HIT'), 'log xác nhận cache HIT');
   ok(r.out.includes('BGM duck'), 'log xác nhận BGM ducking');
-  // Bản ffmpeg thiếu libass → burn-in degrade rõ ràng, .srt rời vẫn có (đã assert trên).
-  if (await hasFilter('subtitles')) {
+  // Burn-in chạy khi CÓ nguồn ffmpeg nào đó kèm libass (binary chính hoặc bản bundled).
+  // Không nguồn nào có → degrade rõ ràng, .srt rời vẫn có (đã assert trên).
+  if (await resolveSubtitleBin()) {
     ok(r.out.includes('burn-in'), 'log xác nhận burn phụ đề');
   } else {
-    ok(r.out.includes('thiếu filter subtitles'), 'ffmpeg thiếu libass → cảnh báo rõ, không chết giữa chừng');
+    ok(
+      r.out.includes('có filter subtitles'),
+      'không nguồn ffmpeg nào có libass → cảnh báo rõ, không chết giữa chừng',
+    );
   }
 }
 

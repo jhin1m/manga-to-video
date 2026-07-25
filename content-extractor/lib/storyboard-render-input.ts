@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import type { RenderConfig } from './schema';
 import { defaultRenderConfig, toScriptManifest } from './schema';
+import { migrateSubtitleStyle } from './subtitle-style';
 import { getSegmentAudio, getStoryboard, getWorkingImage } from './storyboard-store';
 
 // Đọc store RAM → dữ liệu render, DÙNG CHUNG cho export-bundle (gói zip hand-off cho CLI) và
@@ -72,7 +73,8 @@ export function parseConfig(raw: unknown): RenderConfig {
     version: d.version,
     aspect: r.aspect === '16:9' || r.aspect === '1:1' || r.aspect === '9:16' ? r.aspect : d.aspect,
     fps: Number.isFinite(fps) && fps >= 1 && fps <= 120 ? Math.round(fps) : d.fps,
-    subtitles: { ...d.subtitles, ...(r.subtitles ?? {}) },
+    // Style phụ đề đi qua migrate + clamp riêng: nguồn có thể là bundle.zip v1 của máy khác.
+    subtitles: migrateSubtitleStyle(r.subtitles),
     bgm: { ...d.bgm, ...(r.bgm ?? {}) },
     tts: { ...d.tts, ...(r.tts ?? {}) },
     kenburns: { ...d.kenburns, ...(r.kenburns ?? {}) },

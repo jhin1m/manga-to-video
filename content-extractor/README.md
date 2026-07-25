@@ -12,7 +12,7 @@ Không DB, không auth, không queue. Job sống trong RAM — restart server l�
 
 ## Chạy
 
-Yêu cầu Node 24 (`.nvmrc` đã pin; máy dùng Herd nvm thì `nvm use 24`). **ffmpeg/ffprobe tự bundle qua npm** (`ffmpeg-static` + `@ffprobe-installer/ffprobe`) — cài xong dependency là render được trên cả macOS lẫn Windows, không cần cài ffmpeg tay. Máy đã có ffmpeg hệ thống (vd `brew install ffmpeg`) thì bản đó được **ưu tiên** (thứ tự resolve: `FFMPEG_PATH`/`FFPROBE_PATH` → PATH → bundled). Burn-in phụ đề cần build có libass; thiếu libass engine tự bỏ burn-in và giữ `.srt` rời, có cảnh báo. Lưu ý: `ffmpeg-static` tải binary (~45MB) từ GitHub releases lúc `pnpm install` — mạng bị chặn thì bundled không có, app vẫn chạy được bằng ffmpeg trên PATH (hỗ trợ `HTTPS_PROXY` khi install).
+Yêu cầu Node 24 (`.nvmrc` đã pin; máy dùng Herd nvm thì `nvm use 24`). **ffmpeg/ffprobe tự bundle qua npm** (`ffmpeg-static` + `@ffprobe-installer/ffprobe`) — cài xong dependency là render được trên cả macOS lẫn Windows, không cần cài ffmpeg tay. Máy đã có ffmpeg hệ thống (vd `brew install ffmpeg`) thì bản đó được **ưu tiên** (thứ tự resolve: `FFMPEG_PATH`/`FFPROBE_PATH` → PATH → bundled). Burn-in phụ đề cần build có libass; bản ưu tiên thiếu libass thì engine tự rơi xuống bản bundled cho riêng bước burn (cả hai thiếu mới bỏ burn-in và giữ `.srt` rời, có cảnh báo). Lưu ý: `ffmpeg-static` tải binary (~45MB) từ GitHub releases lúc `pnpm install` — mạng bị chặn thì bundled không có, app vẫn chạy được bằng ffmpeg trên PATH (hỗ trợ `HTTPS_PROXY` khi install).
 
 ```bash
 npm install
@@ -71,7 +71,7 @@ Hai provider chọn được. Chọn **per-project** bằng dropdown ở trang v
 | `CAPCUT_DEVICE_JSON` | Path file JSON override device profile CapCut (tuỳ chọn) | — |
 | `CAPCUT_BASE_URL` | Endpoint CapCut — chỉ đổi khi test với mock | `https://editor-api-sg.capcutapi.com` |
 | `TTS_CACHE_DIR` | Cache mp3 trên đĩa theo hash provider+text+voice+model: preview synth 1 lần, CLI tái dùng, **không gọi API lần 2** | `.cache/tts` |
-| `SUBS_FONTS_DIR` | Thư mục font cho burn-in phụ đề (font Việt đủ dấu không nằm trong hệ thống) | — |
+| `SUBS_FONTS_DIR` | **Override** thư mục font cho burn-in. Bỏ trống là đủ dùng — repo đã kèm 8 họ font Việt trong `public/fonts` | `public/fonts` |
 
 **Ingest gộp + chia band (mọi upload)**
 
@@ -253,9 +253,12 @@ Nằm trong `.mtvproj` (`manifest.json`) để round-trip Lưu/Mở project. `co
 - `lib/tts.ts` — orchestration TTS: **cache đĩa** (sha256 [provider+]text+voice+model, ghi atomic `.tmp`→rename, metadata độ dài), resolve provider (arg > `TTS_PROVIDER` > elevenlabs), gọi `provider.synth`; text rỗng không synth.
 - `lib/tts-providers/` — provider abstraction: `types.ts` (interface), `catalog.ts` (data giọng client-safe), `elevenlabs.ts`, `capcut.ts` (port TS thuần `node:crypto`, không auto-fallback), `index.ts` (registry). Thêm provider mới = 1 file + 1 dòng registry.
 - `lib/bundle.ts` — đóng/mở bundle.zip (manifest + render-config + band + audio + bgm), validate version + band khớp shots.
-- `lib/timeline.ts` — **thuần, dùng chung UI+CLI**: `buildTimeline` (audio nhạc trưởng, sàn, phân bổ shot theo weight), `splitSentences`/`allocateCaptions`/`toSrt` (caption tách theo câu, canh giờ tỉ lệ ký tự), `toTimelineJson`.
+- `lib/timeline.ts` — **thuần, dùng chung UI+CLI**: `buildTimeline` (audio nhạc trưởng, sàn, phân bổ shot theo weight), `splitSentences`/`allocateCaptions`/`toSrt` (caption tách theo câu, canh giờ tỉ lệ ký tự), `wrapCaption`/`formatCaption` (IN HOA + ngắt dòng, áp cho cả `.srt` lẫn preview), `toTimelineJson`.
+- `lib/subtitle-style.ts` — **thuần, nguồn DUY NHẤT của style phụ đề**: `toAssForceStyle` (burn-in) và `toPreviewCss` (preview) sinh từ cùng một `SubtitleStyle`, cộng `migrateSubtitleStyle` (config v1 → v2 + kẹp biên). Lưu ý ASS: `OutlineColour` là màu viền ở `border=outline` nhưng là **màu nền hộp** ở `border=box`; `BackColour` luôn là màu bóng.
+- `lib/fonts.ts` + `public/fonts/` — 8 họ font OFL đủ dấu tiếng Việt kèm repo. Cùng file `.ttf` phục vụ `@font-face` của preview và `fontsdir` của libass → preview khớp MP4, render giống nhau trên mọi máy. Thêm font mới phải kiểm glyph tiếng Việt (`pnpm test:fonts`).
+- `lib/subtitle-presets.ts` — 5 preset style dựng sẵn cho panel phụ đề.
 - `lib/kenburns.ts` — **thuần**: suy hướng pan/zoom từ region+aspect, blur-fill khi lệch tỉ lệ, kẹp vận tốc pan → chuỗi filtergraph ffmpeg.
-- `lib/ffmpeg.ts` — wrapper spawn + resolver binary (env `FFMPEG_PATH`/`FFPROBE_PATH` → PATH hệ thống → bundled npm, cache per-process): assert/probe/renderShot/concat/audio-track/duck (sidechain)/burn subs (libass, degrade khi thiếu)/mux. Nhận `AbortSignal` (optional) → kill child ffmpeg khi hủy.
+- `lib/ffmpeg.ts` — wrapper spawn + resolver binary (env `FFMPEG_PATH`/`FFPROBE_PATH` → PATH hệ thống → bundled npm, cache per-process): assert/probe/renderShot/concat/audio-track/duck (sidechain)/burn subs/mux. `resolveSubtitleBin()` chọn riêng binary có libass cho bước burn (degrade khi không nguồn nào có). Nhận `AbortSignal` (optional) → kill child ffmpeg khi hủy.
 - `lib/render.ts` — **orchestration render dùng chung** (source-agnostic): `renderVideo(input, opts)` chạy TTS (cache) → timeline → Ken Burns per shot → concat + BGM duck + burn → MP4 + .srt + timeline.json. `onProgress` phát `RenderEvent` theo mốc; `signal` hủy giữa chừng. CLI **và** route in-app đều là client mỏng của hàm này.
 - `lib/storyboard-render-input.ts` — đọc store RAM → dữ liệu render (dùng chung export-bundle + route render): `buildBundle`/`collectAudio`/`parseConfig`/`parseRenderForm`.
 - `lib/render-lock.ts` — khóa 1-render/job (`Map<jobId, AbortController>` trên globalThis).
@@ -278,6 +281,10 @@ Nằm trong `.mtvproj` (`manifest.json`) để round-trip Lưu/Mở project. `co
 **Unit tests** (ingest, banding, narration, script/timeline/bundle/kenburns/tts-cache):
 ```bash
 npm run test:unit     # gồm cả verify-script (Stage 2) + verify-project (.mtvproj)
+                      # + verify-subtitle-style (mapping ASS, migrate v1→v2, wrap, preset)
+                      # + verify-fonts (family name khớp TTF, đủ dấu Việt, libass chọn đúng file)
+                      # + verify-subtitle-render (ĐO pixel frame thật: cỡ chữ đúng % khung,
+                      #   vị trí trên/giữa/dưới, độ dày viền, nền hộp — SKIP nếu thiếu libass)
 npm run test:script   # riêng Stage 2 unit (mock model + mock ElevenLabs + mock CapCut, không mạng thật)
 npm run test:project  # riêng round-trip + validate file project .mtvproj
 ```
@@ -312,5 +319,9 @@ Test scripts: `content-extractor/scripts/` (`verify-ingest.mts`, `verify-banding
 - **PDF trong zip:** Bỏ qua (chỉ nhận PDF upload trực tiếp).
 - **UI beat:** chọn vùng bằng kéo-vẽ khung + kéo-di chuyển; **resize handle 4 góc chưa có** — chỉnh kích thước qua vẽ lại hoặc numeric "Nâng cao".
 - **Preview ≠ render:** Ken Burns CSS ở `/video/{jobId}` là xấp xỉ (duyệt bố cục/timing/style); MP4 do engine render (**in-app "Render MP4"** hoặc CLI, chung `lib/render.ts`) mới là chân lý. UI có ghi chú rõ.
-- **Burn-in cần libass:** Bản ffmpeg build thiếu libass (vd bottle slim) → engine cảnh báo, bỏ burn-in, vẫn xuất `.srt` rời.
+- **Burn-in cần libass:** Bản ffmpeg chính thiếu libass (vd `brew ffmpeg` build không có) → engine tự dùng **bản bundled** (`ffmpeg-static`) cho riêng bước burn, các bước khác giữ nguyên engine. Cả hai nguồn đều thiếu → cảnh báo, bỏ burn-in, vẫn xuất `.srt` rời.
+- **Hai quirk của libass đã đo và bù trong `lib/subtitle-style.ts`** (video render TRƯỚC bản này sẽ khác đi nếu render lại):
+  - *Cỡ chữ*: libass render nhỏ hơn 1,5 lần so với công thức `PlayResY=288`, nên cỡ chữ chia **432**. Trước đây "Cỡ chữ 4,5%" thực tế chỉ ra ~3% chiều cao khung; giờ đúng nhãn và khớp preview.
+  - *Vị trí*: `force_style` dùng hệ căn lề **SSA v4 cũ** (2 = dưới-giữa, 6 = trên-giữa, 10 = giữa-giữa), không phải numpad V4+. Trước đây chọn "Trên" ra chữ **giữa khung căn trái**, chọn "Giữa" ra **trên căn trái**.
+  - `pnpm test:subtitle-render` đo lại pixel của frame thật để canh gác cả hai con số này.
 - **Ngoài scope vòng sau:** transition giữa shot · multi-voice · nhạc theo cảm xúc · batch cả bộ · preview render-accurate (WebGL) · nhiều track BGM · AI tự chọn nhạc.

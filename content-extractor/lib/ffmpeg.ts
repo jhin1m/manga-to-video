@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { SubtitleStyle } from './schema';
+import { toAssForceStyle } from './subtitle-style';
 
 // Wrapper ffmpeg/ffprobe qua child_process.spawn. Đường dẫn binary resolve theo thứ tự:
 // env FFMPEG_PATH/FFPROBE_PATH → PATH hệ thống → bản bundled từ npm (ffmpeg-static /
@@ -148,13 +149,39 @@ export async function assertFfmpeg(): Promise<void> {
 }
 
 // Một số bản ffmpeg build thiếu libass (filter subtitles) — burn-in phụ đề phải kiểm tra
-// trước và degrade rõ ràng thay vì chết giữa chừng. Cache theo tiến trình.
-let filterListCache: string | null = null;
-export async function hasFilter(name: string): Promise<boolean> {
-  if (filterListCache === null) {
-    filterListCache = await runFfmpeg(['-hide_banner', '-filters']);
+// trước và degrade rõ ràng thay vì chết giữa chừng. Cache theo TỪNG binary: binary chính và
+// bản bundled có thể khác tập filter (vd brew ffmpeg 8 không libass, bundled 6.0 thì có).
+const filterListCache = new Map<string, Promise<string>>();
+
+export async function hasFilter(name: string, bin?: string): Promise<boolean> {
+  const target = bin ?? (await resolveBin('ffmpeg'));
+  let list = filterListCache.get(target);
+  if (!list) {
+    list = runCommand(target, ['-hide_banner', '-filters']);
+    list.catch(() => filterListCache.delete(target));
+    filterListCache.set(target, list);
   }
-  return new RegExp(`\\s${name}\\s`).test(filterListCache);
+  return new RegExp(`\\s${name}\\s`).test(await list);
+}
+
+// Binary dùng RIÊNG cho bước burn phụ đề. Binary chính (env/PATH) có thể build thiếu libass
+// trong khi bản bundled lại có — trường hợp đó dùng bundled cho mỗi bước burn, các bước khác
+// vẫn giữ nguyên engine (xem lý do ở đầu file). null = không nguồn nào có libass → caller degrade.
+let warnedBundledSubs = false;
+export async function resolveSubtitleBin(): Promise<string | null> {
+  const primary = await resolveBin('ffmpeg');
+  if (await hasFilter('subtitles', primary)) return primary;
+  const bundled = await bundledBin('ffmpeg');
+  if (bundled && bundled !== primary && (await hasFilter('subtitles', bundled))) {
+    if (!warnedBundledSubs) {
+      warnedBundledSubs = true;
+      console.warn(
+        '[render] ffmpeg đang dùng build thiếu libass — chuyển sang bản bundled (ffmpeg-static) cho riêng bước burn phụ đề.',
+      );
+    }
+    return bundled;
+  }
+  return null;
 }
 
 // Độ dài (giây) của file media — nguồn duy nhất cho cả TTS (P3) và render (P5).
@@ -341,14 +368,10 @@ export async function duckBgm(
   );
 }
 
-// #rrggbb → &HAABBGGRR (ASS, alpha 00 = đục).
-function assColor(hex: string): string {
-  const m = hex.trim().match(/^#?([0-9a-f]{6})$/i);
-  if (!m) return '&H00FFFFFF';
-  const rr = m[1].slice(0, 2);
-  const gg = m[1].slice(2, 4);
-  const bb = m[1].slice(4, 6);
-  return `&H00${bb}${gg}${rr}`.toUpperCase();
+// Thư mục font kèm repo — libass nhận đường dẫn ĐĨA (không phải URL). Next chạy với cwd =
+// gốc project ở cả `next dev` lẫn `next start`, còn CLI render chạy từ cùng thư mục đó.
+export function bundledFontsDir(): string {
+  return path.join(process.cwd(), 'public', 'fonts');
 }
 
 // Escape đường dẫn cho filter subtitles (Windows-style colon + quote).
@@ -359,36 +382,25 @@ function escapeFilterPath(p: string): string {
 // Burn phụ đề vào video theo style config. libass canh FontSize/Margin theo PlayResY=288
 // mặc định của SRT. Font tiếng Việt: chỉ định tên font trong style; SUBS_FONTS_DIR (hoặc
 // opts.fontsDir) trỏ thư mục font tuỳ chọn khi font không nằm trong hệ thống.
-export async function burnSubs(
-  video: string,
-  srtPath: string,
-  style: SubtitleStyle,
-  out: string,
-  fontsDir?: string,
-  signal?: AbortSignal,
-): Promise<void> {
-  const playResY = 288;
-  const fontSize = Math.max(8, Math.round((style.sizePct / 100) * playResY));
-  const marginV = Math.round((style.marginPct / 100) * playResY);
-  const alignment = style.position === 'top' ? 8 : style.position === 'middle' ? 5 : 2;
-  // Font là free-text từ UI/bundle — lọc ký tự phá cú pháp force_style (' : , \).
-  const safeFont = style.font.replace(/[^\w À-ỹ.-]/g, '').trim() || 'Arial';
-  const forceStyle = [
-    `FontName=${safeFont}`,
-    `FontSize=${fontSize}`,
-    `PrimaryColour=${assColor(style.color)}`,
-    `Outline=${style.outline ? 1 : 0}`,
-    `BorderStyle=1`,
-    `Alignment=${alignment}`,
-    `MarginV=${marginV}`,
-  ].join(',');
-  const dir = fontsDir ?? process.env.SUBS_FONTS_DIR;
+export async function burnSubs(opts: {
+  bin: string; // từ resolveSubtitleBin() — có thể khác binary chính khi bản chính thiếu libass
+  video: string;
+  srtPath: string;
+  style: SubtitleStyle;
+  out: string;
+  fontsDir?: string;
+  signal?: AbortSignal;
+}): Promise<void> {
+  const { style, srtPath, video, out, fontsDir, signal } = opts;
+  const forceStyle = toAssForceStyle(style);
+  const dir = fontsDir ?? process.env.SUBS_FONTS_DIR ?? bundledFontsDir();
   // ffmpeg 8 parse option theo key=value — filename phải là option CÓ TÊN khi đi kèm
   // force_style (positional + quoted bị parser mới từ chối).
   const filter =
     `subtitles=filename='${escapeFilterPath(srtPath)}':force_style='${forceStyle}'` +
     (dir ? `:fontsdir='${escapeFilterPath(dir)}'` : '');
-  await runFfmpeg(
+  await runCommand(
+    opts.bin,
     [
       '-y',
       '-i',

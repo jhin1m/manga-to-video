@@ -1,4 +1,10 @@
-import type { BeatRegion, MotionOverride, RenderConfig, ScriptSegment } from './schema';
+import type {
+  BeatRegion,
+  MotionOverride,
+  RenderConfig,
+  ScriptSegment,
+  SubtitleStyle,
+} from './schema';
 import { estimateSeconds } from './schema';
 
 // Timeline thuần (không import Node) — dùng chung cho CLI render (P5/P6) và Preview UI (P4).
@@ -130,6 +136,41 @@ export function splitSentences(text: string): string[] {
     .filter(Boolean);
 }
 
+// Ngắt dòng thủ công theo số ký tự tối đa. Dùng CHUNG cho .srt và preview để hai bên xuống
+// dòng ĐÚNG CÙNG CHỖ — libass tự wrap theo cách khác, và file .srt rời (YouTube/CapCut) cũng
+// cần dòng ngắn. maxChars <= 0 = tắt, giữ nguyên văn.
+// Ngắt ở khoảng trắng; từ dài hơn maxChars thì để tràn (tiếng Việt không có từ dài bất thường).
+export function wrapCaption(text: string, maxChars: number): string {
+  if (maxChars <= 0) return text;
+  return text
+    .split('\n')
+    .map((paragraph) => {
+      const lines: string[] = [];
+      let current = '';
+      for (const word of paragraph.split(/\s+/).filter(Boolean)) {
+        if (!current) current = word;
+        else if (current.length + 1 + word.length <= maxChars) current += ` ${word}`;
+        else {
+          lines.push(current);
+          current = word;
+        }
+      }
+      if (current) lines.push(current);
+      return lines.join('\n');
+    })
+    .join('\n');
+}
+
+// Chữ hiển thị của một caption: IN HOA (tuỳ chọn) rồi ngắt dòng. Preview và .srt gọi chung
+// hàm này nên không thể lệch nhau.
+export function formatCaption(
+  text: string,
+  style?: Pick<SubtitleStyle, 'uppercase' | 'maxCharsPerLine'>,
+): string {
+  if (!style) return text;
+  return wrapCaption(style.uppercase ? text.toUpperCase() : text, style.maxCharsPerLine);
+}
+
 function srtTime(sec: number): string {
   const clamped = Math.max(0, sec);
   const h = Math.floor(clamped / 3600);
@@ -163,7 +204,13 @@ export function allocateCaptions(
 
 // Caption tách theo CÂU trong từng segment (Validation S1) — không đổ cả khối narration.
 // Mọi caption nằm gọn trong [start_seg, end_seg] của segment nó thuộc về.
-export function toSrt(timeline: Timeline, segments: ScriptSegment[]): string {
+// style (tuỳ chọn) áp IN HOA + ngắt dòng — SRT cho phép cue nhiều dòng nên SỐ CUE không đổi.
+// Không truyền style = hành vi y như trước (dùng bởi test cũ và caller chưa cập nhật).
+export function toSrt(
+  timeline: Timeline,
+  segments: ScriptSegment[],
+  style?: Pick<SubtitleStyle, 'uppercase' | 'maxCharsPerLine'>,
+): string {
   const byId = new Map(segments.map((s) => [s.id, s]));
   const blocks: string[] = [];
   let index = 1;
@@ -171,7 +218,8 @@ export function toSrt(timeline: Timeline, segments: ScriptSegment[]): string {
     const seg = byId.get(tseg.segId);
     if (!seg || !seg.narration.trim()) continue;
     for (const cap of allocateCaptions(splitSentences(seg.narration), tseg.start, tseg.end)) {
-      blocks.push(`${index}\n${srtTime(cap.start)} --> ${srtTime(cap.end)}\n${cap.text}\n`);
+      const text = formatCaption(cap.text, style);
+      blocks.push(`${index}\n${srtTime(cap.start)} --> ${srtTime(cap.end)}\n${text}\n`);
       index++;
     }
   }

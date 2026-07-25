@@ -1,6 +1,7 @@
 import AdmZip from 'adm-zip';
 import type { RenderConfig, ScriptManifest } from './schema';
 import { RENDER_CONFIG_VERSION, SCRIPT_VERSION } from './schema';
+import { migrateSubtitleStyle } from './subtitle-style';
 
 // Bundle zip = hand-off self-contained giữa Preview UI và CLI render:
 //   manifest.json         — ScriptManifest (kịch bản đã duyệt)
@@ -73,10 +74,16 @@ export function readBundle(zipBuffer: Buffer): BundleData {
       `Bundle: manifest version ${scriptManifest.version} không khớp SCRIPT_VERSION ${SCRIPT_VERSION}`,
     );
   }
-  if (config.version !== RENDER_CONFIG_VERSION) {
+  // Bundle CŨ hơn vẫn render được: chỉ phần style phụ đề đổi giữa các version, migrate là đủ.
+  // Bundle MỚI hơn code thì từ chối — không đoán được field tương lai.
+  if (config.version > RENDER_CONFIG_VERSION) {
     throw new Error(
-      `Bundle: render-config version ${config.version} không khớp RENDER_CONFIG_VERSION ${RENDER_CONFIG_VERSION}`,
+      `Bundle: render-config version ${config.version} mới hơn RENDER_CONFIG_VERSION ${RENDER_CONFIG_VERSION} — cập nhật app rồi render lại`,
     );
+  }
+  if (config.version < RENDER_CONFIG_VERSION) {
+    config.subtitles = migrateSubtitleStyle(config.subtitles);
+    config.version = RENDER_CONFIG_VERSION;
   }
   assertSafeName(scriptManifest.jobId, 'jobId');
   for (const seg of scriptManifest.segments) {

@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:unit": "tsx scripts/verify-ingest.mts && tsx scripts/verify-banding.mts && tsx scripts/verify-narration.mts && tsx scripts/verify-script.mts && tsx scripts/verify-project.mts && tsx scripts/verify-kenburns-css.mts && tsx scripts/verify-ink-bbox.mts && tsx scripts/verify-auto-region.mts && tsx scripts/verify-settings.mts",
+    "test:unit": "tsx scripts/verify-ingest.mts && tsx scripts/verify-banding.mts && tsx scripts/verify-narration.mts && tsx scripts/verify-script.mts && tsx scripts/verify-project.mts && tsx scripts/verify-kenburns-css.mts && tsx scripts/verify-ink-bbox.mts && tsx scripts/verify-auto-region.mts && tsx scripts/verify-settings.mts && tsx scripts/verify-subtitle-style.mts && tsx scripts/verify-fonts.mts && tsx scripts/verify-subtitle-render.mts",
+    "test:subtitle-style": "tsx scripts/verify-subtitle-style.mts",
+    "test:fonts": "tsx scripts/verify-fonts.mts",
     "test:settings": "tsx scripts/verify-settings.mts",
     "test:script": "tsx scripts/verify-script.mts",
     "test:project": "tsx scripts/verify-project.mts",
@@ -17,7 +19,8 @@
     "mock:elevenlabs": "node scripts/mock-elevenlabs.mjs",
     "mock:script": "node scripts/mock-script-model.mjs",
     "test:e2e": "tsx scripts/e2e-storyboard.mts",
-    "test:e2e-video": "tsx scripts/e2e-script-video.mts"
+    "test:e2e-video": "tsx scripts/e2e-script-video.mts",
+    "test:subtitle-render": "tsx scripts/verify-subtitle-render.mts"
   },
   "dependencies": {
     "@ffprobe-installer/ffprobe": "~2.1.2",

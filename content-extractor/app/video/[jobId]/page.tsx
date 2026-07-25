@@ -25,8 +25,8 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Slider } from '@/components/ui/slider';
-import { Switch } from '@/components/ui/switch';
 import { PageShell } from '@/components/page-shell';
+import { SubtitlePanel } from '@/components/video/subtitle-panel';
 import { useProject } from '@/components/project-context';
 import { useReducedMotion } from '@/components/use-reduced-motion';
 import { readNdjsonBody } from '@/lib/ndjson-client';
@@ -34,7 +34,14 @@ import type { RenderConfig, ScriptDTO, StoryboardDTO } from '@/lib/schema';
 import { defaultRenderConfig } from '@/lib/schema';
 import { planKenburns } from '@/lib/kenburns';
 import { ASPECT_CSS, kenburnsFrameStyle } from '@/lib/kenburns-css';
-import { allocateCaptions, buildTimeline, splitSentences, TIMELINE_DEFAULTS } from '@/lib/timeline';
+import {
+  allocateCaptions,
+  buildTimeline,
+  formatCaption,
+  splitSentences,
+  TIMELINE_DEFAULTS,
+} from '@/lib/timeline';
+import { toPreviewCss } from '@/lib/subtitle-style';
 import { TTS_PROVIDER_OPTIONS } from '@/lib/tts-providers/catalog';
 
 // Dòng NDJSON từ route render — khai type ở client (không import runtime Node của lib/render.ts
@@ -522,8 +529,10 @@ export default function VideoPreviewPage() {
               </div>
             )}
             {caption && (
+              // Lề ngang lấy từ sideMarginPct (đi thẳng vào MarginL/R của ASS lúc render), chữ
+              // và mọi hiệu ứng lấy từ toPreviewCss — cùng nguồn với force_style của burn-in.
               <div
-                className="pointer-events-none absolute inset-x-0 flex px-[4cqw]"
+                className="pointer-events-none absolute inset-x-0 flex"
                 style={{
                   ...(sub.position === 'top'
                     ? { top: `${sub.marginPct}cqh` }
@@ -531,20 +540,11 @@ export default function VideoPreviewPage() {
                       ? { top: '50%', transform: 'translateY(-50%)' }
                       : { bottom: `${sub.marginPct}cqh` }),
                   justifyContent: 'center',
+                  paddingInline: `${sub.sideMarginPct}cqw`,
                 }}
               >
-                <span
-                  className="text-center font-semibold leading-tight"
-                  style={{
-                    color: sub.color,
-                    fontFamily: `'${sub.font}', sans-serif`,
-                    fontSize: `${sub.sizePct}cqh`,
-                    textShadow: sub.outline
-                      ? '0 0 4px #000, 0 0 4px #000, 2px 2px 2px #000'
-                      : undefined,
-                  }}
-                >
-                  {caption}
+                <span className="text-center leading-tight" style={toPreviewCss(sub)}>
+                  {formatCaption(caption, sub)}
                 </span>
               </div>
             )}
@@ -664,84 +664,7 @@ export default function VideoPreviewPage() {
             </CardContent>
           </Card>
 
-          <Card className="gap-3 py-4">
-            <CardHeader className="px-4">
-              <CardTitle className="text-sm">Phụ đề</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 px-4 text-xs text-muted-foreground">
-              <label className="flex items-center justify-between gap-2">
-                Font
-                <Input
-                  type="text"
-                  value={sub.font}
-                  onChange={(e) => set('subtitles', { ...sub, font: e.target.value })}
-                  className="h-7 w-40 px-1.5 text-xs"
-                />
-              </label>
-              <label className="flex items-center justify-between gap-2">
-                Cỡ chữ: {sub.sizePct.toFixed(1)}%
-                <Slider
-                  min={2}
-                  max={10}
-                  step={0.1}
-                  value={[sub.sizePct]}
-                  onValueChange={([v]) => set('subtitles', { ...sub, sizePct: v })}
-                  className="w-32"
-                />
-              </label>
-              <label className="flex items-center justify-between gap-2">
-                Màu
-                <input
-                  type="color"
-                  value={sub.color}
-                  onChange={(e) => set('subtitles', { ...sub, color: e.target.value })}
-                />
-              </label>
-              <label className="flex items-center justify-between gap-2">
-                Vị trí
-                <Select
-                  value={sub.position}
-                  onValueChange={(v) =>
-                    set('subtitles', { ...sub, position: v as typeof sub.position })
-                  }
-                >
-                  <SelectTrigger size="sm" className="w-28 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="bottom">Dưới</SelectItem>
-                    <SelectItem value="middle">Giữa</SelectItem>
-                    <SelectItem value="top">Trên</SelectItem>
-                  </SelectContent>
-                </Select>
-              </label>
-              <label className="flex items-center justify-between gap-2">
-                Lề: {sub.marginPct}%
-                <Slider
-                  min={0}
-                  max={25}
-                  step={1}
-                  value={[sub.marginPct]}
-                  onValueChange={([v]) => set('subtitles', { ...sub, marginPct: v })}
-                  className="w-32"
-                />
-              </label>
-              <label className="flex items-center justify-between gap-2">
-                Viền chữ (outline)
-                <Switch
-                  checked={sub.outline}
-                  onCheckedChange={(v) => set('subtitles', { ...sub, outline: v })}
-                />
-              </label>
-              <label className="flex items-center justify-between gap-2">
-                Burn-in vào video (luôn kèm .srt rời)
-                <Switch
-                  checked={sub.burnIn}
-                  onCheckedChange={(v) => set('subtitles', { ...sub, burnIn: v })}
-                />
-              </label>
-            </CardContent>
-          </Card>
+          <SubtitlePanel value={sub} onChange={(s) => set('subtitles', s)} />
 
           <Card className="gap-3 py-4">
             <CardHeader className="px-4">
