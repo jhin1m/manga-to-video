@@ -1,7 +1,8 @@
 // Mock CapCut common_task TTS cho test offline — không gọi API thật. Khớp shape JSON THẬT
 // capture ở Phase 1 (reports/capcut-response-samples.md): new → query (queueing 1 nhịp rồi
-// succeed) → audio URL trỏ về chính mock. mp3 sine ~1s sinh bằng ffmpeg (test render vốn cần
-// ffmpeg). Chế độ lỗi: SSML chứa voice tên FAIL_VOICE → query trả status "failed" (test message
+// succeed) → audio URL trỏ về chính mock. mp3 sine ~1s sinh bằng ffmpeg (bin resolve qua
+// mock-ffmpeg-bin — máy chưa cài ffmpeg vẫn chạy nhờ bản bundled npm).
+// Chế độ lỗi: SSML chứa voice tên FAIL_VOICE → query trả status "failed" (test message
 // lỗi + gợi ý đổi provider). GET /__count = số request /new (assert cache HIT không tạo task).
 // Chạy riêng: node scripts/mock-capcut.mjs (MOCK_PORT, mặc định 3109) hoặc
 // import { createMockCapcut } trong verify script (port 0 = tự chọn).
@@ -11,6 +12,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mockFfmpegBin } from './mock-ffmpeg-bin.mjs';
 
 export const CAPCUT_FAIL_VOICE = 'FAIL_VOICE'; // → task "failed" (test message lỗi)
 export const CAPCUT_QUEUE_VOICE = 'QUEUE_VOICE'; // → luôn "queueing" (test timeout poll)
@@ -19,7 +21,7 @@ async function makeSineMp3(durationSec = 1) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'mock-capcut-'));
   const out = path.join(dir, 'tone.mp3');
   await new Promise((resolve, reject) => {
-    const child = spawn('ffmpeg', [
+    const child = spawn(mockFfmpegBin(), [
       '-y', '-f', 'lavfi', '-i', `sine=frequency=440:duration=${durationSec}`, '-b:a', '32k', out,
     ]);
     child.on('error', reject);

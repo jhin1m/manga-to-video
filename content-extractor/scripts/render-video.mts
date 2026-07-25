@@ -1,5 +1,5 @@
 // CLI render video từ bundle.zip (nguồn chân lý — Preview UI chỉ là xấp xỉ).
-// Cách chạy (Node 24, cần ffmpeg: brew install ffmpeg):
+// Cách chạy (Node 24; ffmpeg tự bundle qua npm — cài hệ thống chỉ khi muốn build riêng):
 //   npm run render -- bundle.zip --aspect 9:16 --out out.mp4
 //   npm run render -- bundle.zip --dry-run            # chỉ timeline.json + .srt, không TTS/ffmpeg
 // Flags: --aspect 9:16|16:9|1:1 · --fps N · --out path.mp4 · --bgm path · --subs srt|burn|both

@@ -1,10 +1,13 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { SubtitleStyle } from './schema';
 
-// Wrapper ffmpeg/ffprobe qua child_process.spawn — không thêm dependency.
-// ffmpeg là system prerequisite: assertFfmpeg() báo lỗi hướng dẫn cài thay vì stack trace.
+// Wrapper ffmpeg/ffprobe qua child_process.spawn. Đường dẫn binary resolve theo thứ tự:
+// env FFMPEG_PATH/FFPROBE_PATH → PATH hệ thống → bản bundled từ npm (ffmpeg-static /
+// @ffprobe-installer). PATH đứng trước bundled để máy đã cài ffmpeg (vd brew ffmpeg 8)
+// giữ nguyên engine đang dùng; máy chưa cài (Windows mới clone) tự rơi xuống bundled.
 
 // AbortSignal → hủy render: child ffmpeg đang chạy bị kill (SIGKILL), lời gọi reject bằng
 // lỗi tên 'AbortError' để caller (route render) phân biệt "người hủy" với "render lỗi thật".
@@ -35,9 +38,17 @@ export function runCommand(bin: string, args: string[], signal?: AbortSignal): P
     child.stderr.on('data', (d) => (stderr += d));
     child.on('error', (err) => {
       cleanup();
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      const code = (err as NodeJS.ErrnoException).code;
+      // ENOENT: path sai · EACCES/EPERM: không có quyền thực thi (vd Defender chặn binary
+      // download, hoặc FFMPEG_PATH trỏ file thường) · EISDIR: trỏ nhầm thư mục (vd đặt
+      // FFMPEG_PATH=C:\ffmpeg\bin thay vì file .exe). Chỉ còn xảy ra khi env override sai
+      // hoặc binary bundled hỏng — resolveBin đã lo fallback PATH/bundled trước khi tới đây.
+      if (code === 'ENOENT' || code === 'EACCES' || code === 'EPERM' || code === 'EISDIR') {
         reject(
-          new Error(`Không tìm thấy ${bin} — cài ffmpeg trước (macOS: brew install ffmpeg).`),
+          new Error(
+            `Không chạy được "${bin}" (${code}) — file không tồn tại, không có quyền thực thi, ` +
+              `hoặc trỏ nhầm thư mục. Kiểm tra FFMPEG_PATH/FFPROBE_PATH nếu có đặt, hoặc ${installHint()}.`,
+          ),
         );
       } else {
         reject(err);
@@ -60,9 +71,80 @@ export function runCommand(bin: string, args: string[], signal?: AbortSignal): P
   });
 }
 
+// ==== Resolve binary: env → PATH hệ thống → bundled ====
+
+type FfBin = 'ffmpeg' | 'ffprobe';
+
+// Lệnh cài theo OS — dùng trong cả message ENOENT lẫn message "hết nguồn resolve".
+function installHint(): string {
+  return process.platform === 'win32'
+    ? 'cài ffmpeg: winget install Gyan.FFmpeg (hoặc scoop install ffmpeg) rồi mở lại terminal'
+    : process.platform === 'darwin'
+      ? 'cài ffmpeg: brew install ffmpeg'
+      : 'cài ffmpeg bằng package manager (vd: sudo apt install ffmpeg)';
+}
+
+// Path bundled từ npm — import lazy trong try/catch: thiếu package/binary (platform lạ,
+// postinstall download fail, chạy standalone không node_modules) → null, không crash module.
+async function bundledBin(bin: FfBin): Promise<string | null> {
+  try {
+    if (bin === 'ffmpeg') {
+      const mod = await import('ffmpeg-static');
+      const p = mod.default;
+      return typeof p === 'string' && existsSync(p) ? p : null;
+    }
+    const mod = await import('@ffprobe-installer/ffprobe');
+    const p = (mod.default ?? mod) as { path?: string };
+    return p.path && existsSync(p.path) ? p.path : null;
+  } catch {
+    return null;
+  }
+}
+
+// Cache promise per-process (pattern như filterListCache). Chỉ khi CẢ ba nguồn đều thiếu
+// (reject) mới xoá khỏi cache cho lần gọi sau thử lại; đã resolve thì binary giữ nguyên
+// tới hết tiến trình — đổi env hay cài ffmpeg mới cần restart server mới ăn.
+const binCache = new Map<FfBin, Promise<string>>();
+
+function resolveBin(bin: FfBin): Promise<string> {
+  let cached = binCache.get(bin);
+  if (!cached) {
+    cached = (async () => {
+      const envVar = bin === 'ffmpeg' ? 'FFMPEG_PATH' : 'FFPROBE_PATH';
+      const fromEnv = process.env[envVar]?.trim();
+      // Env là override cứng: trỏ sai sẽ lỗi rõ lúc spawn, không silent fallback.
+      if (fromEnv) return fromEnv;
+      try {
+        await runCommand(bin, ['-version']);
+        return bin;
+      } catch {
+        // PATH không có hoặc binary hỏng → thử bundled.
+      }
+      const bundled = await bundledBin(bin);
+      if (bundled) return bundled;
+      throw new Error(
+        `Không tìm thấy ${bin} trên PATH lẫn bản bundled trong node_modules — ${installHint()}; ` +
+          `hoặc đặt ${envVar} trỏ thẳng tới binary.`,
+      );
+    })();
+    cached.catch(() => binCache.delete(bin));
+    binCache.set(bin, cached);
+  }
+  return cached;
+}
+
+// Mọi call site ffmpeg/ffprobe trong repo đi qua 2 hàm này để hưởng resolver.
+export async function runFfmpeg(args: string[], signal?: AbortSignal): Promise<string> {
+  return runCommand(await resolveBin('ffmpeg'), args, signal);
+}
+
+export async function runFfprobe(args: string[], signal?: AbortSignal): Promise<string> {
+  return runCommand(await resolveBin('ffprobe'), args, signal);
+}
+
 export async function assertFfmpeg(): Promise<void> {
-  await runCommand('ffmpeg', ['-version']);
-  await runCommand('ffprobe', ['-version']);
+  await runFfmpeg(['-version']);
+  await runFfprobe(['-version']);
 }
 
 // Một số bản ffmpeg build thiếu libass (filter subtitles) — burn-in phụ đề phải kiểm tra
@@ -70,15 +152,14 @@ export async function assertFfmpeg(): Promise<void> {
 let filterListCache: string | null = null;
 export async function hasFilter(name: string): Promise<boolean> {
   if (filterListCache === null) {
-    filterListCache = await runCommand('ffmpeg', ['-hide_banner', '-filters']);
+    filterListCache = await runFfmpeg(['-hide_banner', '-filters']);
   }
   return new RegExp(`\\s${name}\\s`).test(filterListCache);
 }
 
 // Độ dài (giây) của file media — nguồn duy nhất cho cả TTS (P3) và render (P5).
 export async function probeDurationSec(filePath: string, signal?: AbortSignal): Promise<number> {
-  const out = await runCommand(
-    'ffprobe',
+  const out = await runFfprobe(
     [
       '-v',
       'error',
@@ -99,7 +180,7 @@ export async function probeDurationSec(filePath: string, signal?: AbortSignal): 
 
 // Có video + audio stream không (assert đầu ra cuối).
 export async function probeStreams(filePath: string): Promise<string[]> {
-  const out = await runCommand('ffprobe', [
+  const out = await runFfprobe([
     '-v',
     'error',
     '-show_entries',
@@ -121,8 +202,7 @@ export async function renderShot(opts: {
   out: string;
   signal?: AbortSignal;
 }): Promise<void> {
-  await runCommand(
-    'ffmpeg',
+  await runFfmpeg(
     [
       '-y',
       '-loop',
@@ -162,8 +242,7 @@ export async function concatVideo(shotFiles: string[], out: string, signal?: Abo
     .map((f) => `file '${path.resolve(f).replace(/'/g, "'\\''")}'`)
     .join('\n');
   await writeFile(listPath, list);
-  await runCommand(
-    'ffmpeg',
+  await runFfmpeg(
     ['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', out],
     signal,
   );
@@ -179,8 +258,7 @@ export async function buildAudioTrack(
   signal?: AbortSignal,
 ): Promise<void> {
   if (segAudio.length === 0) {
-    await runCommand(
-      'ffmpeg',
+    await runFfmpeg(
       [
         '-y',
         '-f',
@@ -221,7 +299,7 @@ export async function buildAudioTrack(
     'pcm_s16le',
     out,
   );
-  await runCommand('ffmpeg', args, signal);
+  await runFfmpeg(args, signal);
 }
 
 // Trộn BGM dưới narration với sidechain ducking: BGM hạ khi có lời (sidechaincompress),
@@ -236,8 +314,7 @@ export async function duckBgm(
 ): Promise<void> {
   // Map duckDb → ratio nén: -6dB → 4, -12dB → 8, -18dB → 12 (kẹp 2..20).
   const ratio = Math.max(2, Math.min(20, Math.abs(opts.duckDb) * (2 / 3)));
-  await runCommand(
-    'ffmpeg',
+  await runFfmpeg(
     [
       '-y',
       '-i',
@@ -311,8 +388,7 @@ export async function burnSubs(
   const filter =
     `subtitles=filename='${escapeFilterPath(srtPath)}':force_style='${forceStyle}'` +
     (dir ? `:fontsdir='${escapeFilterPath(dir)}'` : '');
-  await runCommand(
-    'ffmpeg',
+  await runFfmpeg(
     [
       '-y',
       '-i',
@@ -334,8 +410,7 @@ export async function burnSubs(
 
 // Ghép video + audio → MP4 cuối (video copy, audio AAC).
 export async function mux(video: string, audio: string, out: string, signal?: AbortSignal): Promise<void> {
-  await runCommand(
-    'ffmpeg',
+  await runFfmpeg(
     ['-y', '-i', video, '-i', audio, '-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', '-shortest', out],
     signal,
   );

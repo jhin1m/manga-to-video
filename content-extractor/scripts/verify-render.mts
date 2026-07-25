@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { writeBundle } from '../lib/bundle';
-import { assertFfmpeg, hasFilter, probeDurationSec, probeStreams, runCommand } from '../lib/ffmpeg';
+import { assertFfmpeg, hasFilter, probeDurationSec, probeStreams, runFfmpeg } from '../lib/ffmpeg';
 import type { ScriptSegment } from '../lib/schema';
 import { defaultRenderConfig, toScriptManifest } from '../lib/schema';
 import { createMockElevenLabs } from './mock-elevenlabs.mjs';
@@ -28,7 +28,7 @@ const ok = (c: boolean, label: string) => eq(c, true, label);
 try {
   await assertFfmpeg();
 } catch {
-  console.log('SKIP: thiếu ffmpeg/ffprobe — bỏ qua test:render (brew install ffmpeg).');
+  console.log('SKIP: thiếu ffmpeg/ffprobe (PATH lẫn bundled đều không có) — bỏ qua test:render.');
   process.exit(0);
 }
 
@@ -139,7 +139,7 @@ const out916 = path.join(tmp, 'out-916.mp4');
 console.log('D. Render 16:9 + BGM + burn-in — cùng bundle, TTS cache HIT');
 {
   const bgmPath = path.join(tmp, 'bgm.mp3');
-  await runCommand('ffmpeg', ['-y', '-f', 'lavfi', '-i', 'sine=frequency=220:duration=8', '-b:a', '32k', bgmPath]);
+  await runFfmpeg(['-y', '-f', 'lavfi', '-i', 'sine=frequency=220:duration=8', '-b:a', '32k', bgmPath]);
   const out169 = path.join(tmp, 'out-169.mp4');
   const r = await runCli(
     [bundlePath, '--aspect', '16:9', '--out', out169, '--bgm', bgmPath, '--subs', 'both'],

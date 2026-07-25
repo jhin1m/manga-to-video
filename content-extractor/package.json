@@ -20,9 +20,11 @@
     "test:e2e-video": "tsx scripts/e2e-script-video.mts"
   },
   "dependencies": {
+    "@ffprobe-installer/ffprobe": "~2.1.2",
     "adm-zip": "^0.5.18",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "ffmpeg-static": "~5.3.0",
     "lucide-react": "^1.23.0",
     "next": "16.2.10",
     "next-themes": "^0.4.6",

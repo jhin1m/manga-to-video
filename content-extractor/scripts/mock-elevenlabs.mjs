@@ -1,7 +1,8 @@
 // Mock ElevenLabs TTS cho test Stage 2 — không tốn API/tiền thật.
 // POST /v1/text-to-speech/{voiceId} → trả 1 mp3 sine ~1s cố định (độ dài biết trước để
 // assert timeline). GET /__count → {count} (đếm request TTS — assert cache HIT không fetch).
-// mp3 sinh bằng ffmpeg lúc khởi động (test render vốn cần ffmpeg sẵn).
+// mp3 sinh bằng ffmpeg lúc khởi động (bin resolve qua mock-ffmpeg-bin — máy chưa cài
+// ffmpeg vẫn chạy nhờ bản bundled npm).
 // Chạy đứng riêng: node scripts/mock-elevenlabs.mjs (MOCK_PORT, mặc định 3107)
 // hoặc import { createMockElevenLabs } trong verify script (port 0 = tự chọn).
 import http from 'node:http';
@@ -10,12 +11,13 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mockFfmpegBin } from './mock-ffmpeg-bin.mjs';
 
 async function makeSineMp3(durationSec = 1) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'mock-11labs-'));
   const out = path.join(dir, 'tone.mp3');
   await new Promise((resolve, reject) => {
-    const child = spawn('ffmpeg', [
+    const child = spawn(mockFfmpegBin(), [
       '-y',
       '-f',
       'lavfi',

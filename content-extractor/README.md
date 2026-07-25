@@ -12,7 +12,7 @@ Không DB, không auth, không queue. Job sống trong RAM — restart server l�
 
 ## Chạy
 
-Yêu cầu Node 24 (`.nvmrc` đã pin; máy dùng Herd nvm thì `nvm use 24`). Stage 2 render cần **ffmpeg/ffprobe** (`brew install ffmpeg` — burn-in phụ đề cần bản build có libass; thiếu libass CLI tự bỏ burn-in và giữ `.srt` rời, có cảnh báo).
+Yêu cầu Node 24 (`.nvmrc` đã pin; máy dùng Herd nvm thì `nvm use 24`). **ffmpeg/ffprobe tự bundle qua npm** (`ffmpeg-static` + `@ffprobe-installer/ffprobe`) — cài xong dependency là render được trên cả macOS lẫn Windows, không cần cài ffmpeg tay. Máy đã có ffmpeg hệ thống (vd `brew install ffmpeg`) thì bản đó được **ưu tiên** (thứ tự resolve: `FFMPEG_PATH`/`FFPROBE_PATH` → PATH → bundled). Burn-in phụ đề cần build có libass; thiếu libass engine tự bỏ burn-in và giữ `.srt` rời, có cảnh báo. Lưu ý: `ffmpeg-static` tải binary (~45MB) từ GitHub releases lúc `pnpm install` — mạng bị chặn thì bundled không có, app vẫn chạy được bằng ffmpeg trên PATH (hỗ trợ `HTTPS_PROXY` khi install).
 
 ```bash
 npm install
@@ -255,7 +255,7 @@ Nằm trong `.mtvproj` (`manifest.json`) để round-trip Lưu/Mở project. `co
 - `lib/bundle.ts` — đóng/mở bundle.zip (manifest + render-config + band + audio + bgm), validate version + band khớp shots.
 - `lib/timeline.ts` — **thuần, dùng chung UI+CLI**: `buildTimeline` (audio nhạc trưởng, sàn, phân bổ shot theo weight), `splitSentences`/`allocateCaptions`/`toSrt` (caption tách theo câu, canh giờ tỉ lệ ký tự), `toTimelineJson`.
 - `lib/kenburns.ts` — **thuần**: suy hướng pan/zoom từ region+aspect, blur-fill khi lệch tỉ lệ, kẹp vận tốc pan → chuỗi filtergraph ffmpeg.
-- `lib/ffmpeg.ts` — wrapper spawn (không thêm dep): assert/probe/renderShot/concat/audio-track/duck (sidechain)/burn subs (libass, degrade khi thiếu)/mux. Nhận `AbortSignal` (optional) → kill child ffmpeg khi hủy.
+- `lib/ffmpeg.ts` — wrapper spawn + resolver binary (env `FFMPEG_PATH`/`FFPROBE_PATH` → PATH hệ thống → bundled npm, cache per-process): assert/probe/renderShot/concat/audio-track/duck (sidechain)/burn subs (libass, degrade khi thiếu)/mux. Nhận `AbortSignal` (optional) → kill child ffmpeg khi hủy.
 - `lib/render.ts` — **orchestration render dùng chung** (source-agnostic): `renderVideo(input, opts)` chạy TTS (cache) → timeline → Ken Burns per shot → concat + BGM duck + burn → MP4 + .srt + timeline.json. `onProgress` phát `RenderEvent` theo mốc; `signal` hủy giữa chừng. CLI **và** route in-app đều là client mỏng của hàm này.
 - `lib/storyboard-render-input.ts` — đọc store RAM → dữ liệu render (dùng chung export-bundle + route render): `buildBundle`/`collectAudio`/`parseConfig`/`parseRenderForm`.
 - `lib/render-lock.ts` — khóa 1-render/job (`Map<jobId, AbortController>` trên globalThis).
