@@ -46,6 +46,26 @@ export async function createMockElevenLabs(port = 0) {
       res.end(JSON.stringify({ count }));
       return;
     }
+    // Danh sách giọng cho dropdown Settings. MOCK_VOICES_STATUS != 200 → giả lỗi upstream
+    // (test đường lùi "UI vẫn dùng được ô nhập tự do").
+    if (req.method === 'GET' && req.url === '/v1/voices') {
+      const status = Number(process.env.MOCK_VOICES_STATUS ?? 200);
+      if (status !== 200) {
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ detail: 'mock: lỗi giả' }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          voices: [
+            { voice_id: '21m00Tcm4TlvDq8ikWAM', name: 'Rachel' },
+            { voice_id: 'AZnzlk1XvdvUeBnXmlld', name: 'Domi' },
+          ],
+        }),
+      );
+      return;
+    }
     if (req.method === 'POST' && req.url?.startsWith('/v1/text-to-speech/')) {
       let body = '';
       req.on('data', (c) => (body += c));

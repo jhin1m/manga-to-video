@@ -27,5 +27,8 @@ export interface TtsProvider {
   // bên trong synth). Không khai báo = key dùng thẳng cfg.voiceId. Nhờ vậy đổi giọng mặc định
   // qua ENV không HIT nhầm audio giọng cũ (key phản ánh đúng giọng sẽ synth).
   resolveVoiceId?(cfg: TtsConfig): string;
+  // Lấy danh sách giọng TỪ API của nhà cung cấp (giọng phụ thuộc tài khoản, không catalog
+  // sẵn được). Không khai báo = UI dùng `voices` tĩnh, hoặc ô nhập tự do nếu cũng không có.
+  listVoices?(cfg: TtsConfig): Promise<TtsVoice[]>;
   synth(text: string, cfg: TtsConfig): Promise<Buffer>; // text đã trim, khác rỗng → mp3
 }

@@ -782,6 +782,10 @@ export default function VideoPreviewPage() {
                 </>
               )}
               <p>
+                Để &ldquo;Theo ENV&rdquo; = dùng giọng mặc định đặt ở Settings ⚙️ (tab Giọng
+                đọc); các ô ở đây chỉ ghi đè cho riêng video này.
+              </p>
+              <p>
                 Synth 1 lần là vào cache đĩa — CLI render tái dùng, không gọi API lại.
                 {capcutVoices ? ' CapCut là API miễn phí không chính thức — có thể ngừng chạy.' : ''}
               </p>

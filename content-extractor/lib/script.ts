@@ -14,7 +14,13 @@ import {
   StreamUnsupportedError,
   withRetry,
 } from './vision';
-import { isZaiProvider, readAiSettings, resolveApiKey } from './settings';
+import {
+  envExtraParams,
+  readAiSettings,
+  resolveApiKey,
+  stageConfig,
+  stageExtraParams,
+} from './settings';
 import { cropRegion } from './narration';
 import { getStoryboard } from './storyboard-store';
 
@@ -27,26 +33,29 @@ export interface ScriptConfig {
   apiKey: string;
   baseURL?: string;
   model: string;
-  disableThinking: boolean;
+  /** Param ngoài chuẩn OpenAI (tắt reasoning, trần token) — tính sẵn theo provider ở tầng
+   *  config, xem lib/settings.ts. */
+  extraParams: Record<string, unknown>;
 }
 
 export function readScriptConfig(): ScriptConfig {
-  // Có settings từ UI → settings áp cho CẢ biên kịch (một provider cho cả hai stage),
-  // bỏ qua cặp SCRIPT_API_KEY/SCRIPT_BASE_URL vì key phải khớp provider đã chọn.
-  // Nút "Dùng theo ENV" trong Settings xóa file → quay lại nhánh ENV thuần bên dưới.
+  // Có settings từ UI → nhánh script của settings quyết định (script=null thì dùng chung y
+  // cấu hình Vision), bỏ qua cặp SCRIPT_API_KEY/SCRIPT_BASE_URL vì key phải khớp provider
+  // đã chọn. Nút "Dùng theo ENV" trong Settings xóa file → quay lại nhánh ENV thuần bên dưới.
   const settings = readAiSettings();
   if (settings) {
-    const { apiKey, keyEnv } = resolveApiKey(settings.provider);
+    const cfg = stageConfig(settings, 'script');
+    const { apiKey, keyEnv } = resolveApiKey(cfg);
     if (!apiKey) {
       throw new Error(
-        `Thiếu ${keyEnv} (hoặc OPENAI_API_KEY) trong .env.local cho provider "${settings.provider}" đã chọn ở Settings.`,
+        `Thiếu API key cho provider "${cfg.provider}" đã chọn ở Settings — nhập key trong Settings hoặc khai báo ${keyEnv} (hoặc OPENAI_API_KEY) trong .env.local.`,
       );
     }
     return {
       apiKey,
-      baseURL: settings.baseURL,
-      model: settings.scriptModel || process.env.SCRIPT_MODEL || 'gpt-4o',
-      disableThinking: isZaiProvider(settings.provider) && settings.disableThinking,
+      baseURL: cfg.baseURL,
+      model: cfg.model || process.env.SCRIPT_MODEL || 'gpt-4o',
+      extraParams: stageExtraParams(cfg),
     };
   }
 
@@ -56,11 +65,12 @@ export function readScriptConfig(): ScriptConfig {
       'Thiếu SCRIPT_API_KEY hoặc OPENAI_API_KEY — khai báo trong .env.local (xem .env.example).',
     );
   }
+  const baseURL = process.env.SCRIPT_BASE_URL || process.env.OPENAI_BASE_URL || undefined;
   return {
     apiKey,
-    baseURL: process.env.SCRIPT_BASE_URL || process.env.OPENAI_BASE_URL || undefined,
+    baseURL,
     model: process.env.SCRIPT_MODEL || 'gpt-4o',
-    disableThinking: /^(true|1|yes)$/i.test(process.env.SCRIPT_DISABLE_THINKING ?? ''),
+    extraParams: envExtraParams(/^(true|1|yes)$/i.test(process.env.SCRIPT_DISABLE_THINKING ?? '')),
   };
 }
 
@@ -278,7 +288,7 @@ export async function generateScript(
         client,
         config.model,
         messages,
-        config.disableThinking,
+        config.extraParams,
         parseScriptJSON,
         label,
         { onDelta: hooks.onChars, onAttempt: hooks.onAttempt },
@@ -290,7 +300,7 @@ export async function generateScript(
           client,
           config.model,
           messages,
-          config.disableThinking,
+          config.extraParams,
           parseScriptJSON,
           label,
         );
@@ -303,7 +313,7 @@ export async function generateScript(
       client,
       config.model,
       messages,
-      config.disableThinking,
+      config.extraParams,
       parseScriptJSON,
       label,
     );
@@ -351,7 +361,7 @@ export async function generateRecap(segments: ScriptSegment[]): Promise<string> 
   ];
   // jsonMode=false — recap là văn bản thuần; ép json_object làm model trả JSON sai format.
   const res = await withRetry(() =>
-    createCompletion(client, config.model, messages, config.disableThinking, false),
+    createCompletion(client, config.model, messages, config.extraParams, false),
   );
   const recap = res.choices[0]?.message?.content?.trim();
   if (!recap) {
