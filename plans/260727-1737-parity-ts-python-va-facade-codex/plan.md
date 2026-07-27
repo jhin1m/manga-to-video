@@ -1,6 +1,7 @@
 # Parity TS ↔ skill Python + hợp nhất SKILL.md cho Codex
 
-**Trạng thái:** hoàn tất (4/4 phase) · tạo 2026-07-27 · thực thi 2026-07-27 · **chưa commit**
+**Trạng thái:** hoàn tất (4/4 phase) · tạo & thực thi 2026-07-27 · đã commit
+(`8669893` project, `987debf` skill), **chưa push**
 
 ## Vấn đề
 
@@ -70,6 +71,29 @@ Phase 04 độc lập hoàn toàn — làm lúc nào cũng được.
    `n,5` với `n` chẵn. Golden `lam-tron-nua-don-vi` canh đúng chỗ này.
 6. **`verify-parity.mts` import `./gen-parity.mjs`** (không phải `.mts`) — `tsc --noEmit`
    báo TS5097 với đuôi `.mts`.
+
+## Code review tìm thêm — đã sửa hết
+
+Fuzz vi sai 1200 case `migrateSubtitleStyle` ↔ `normalize_subtitle_style` phơi ra 3 lỗ mà
+golden ban đầu không phủ. Đã sửa + thêm 12 golden canh đúng chỗ:
+
+- **`ass_color` còn dùng `round()`** (sót khi quét js_round). `opacity=0.3` cho tích đúng
+  178,5 → alpha `B2` thay vì `B3`. Giá trị DUY NHẤT trên lưới 4 chữ số thập phân bị lệch,
+  nên golden cũ không bao giờ vấp — mà người dùng gõ `0.3` thì vấp ngay.
+- **`_to_number` ≠ `Number()` của JS** ở 5 lớp input. Tệ nhất `"1_0"`: Python đọc ra 10,
+  JS ra NaN → web dựng chữ 4.5% còn skill 10%.
+- **`\w` của Python là Unicode, của JS là ASCII** → `_safe_font_name` giữ lại CJK mà TS xoá.
+
+Cùng đợt: `alignment` trong `gen-parity.mts` gọi `alignmentOf()` thay vì gõ tay; `--subs-preset`
+kiểm ngay sau `parse_args` thay vì fail sau khi đã nạp hết slice; `sync_codex_facade.py` đọc
+`CODEX_HOME`; main-module guard dùng `import.meta.filename` (chuỗi `file://${argv[1]}` không
+khớp khi đường dẫn có khoảng trắng → script im lặng không ghi gì).
+
+## Còn mở
+
+- `_num()` in số mũ khác JS (`1e-07` vs `1e-7`). Chỉ chạm được khi |x| < 1e-6 trong miền đã
+  kẹp, tức phải cố tình gõ. Chưa sửa.
+- Golden `build_timeline` vẫn ngoài scope. Phase 02 chạy trơn nên giờ là việc rẻ, làm sau.
 
 ## Acceptance chung
 
