@@ -15,7 +15,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { bundledFontsDir, resolveSubtitleBin } from '../lib/ffmpeg';
-import { FONT_CATALOG } from '../lib/fonts';
+import { FONT_BLACKLIST, FONT_CATALOG } from '../lib/fonts';
 import { defaultRenderConfig } from '../lib/schema';
 import { toAssForceStyle } from '../lib/subtitle-style';
 
@@ -37,6 +37,11 @@ for (const entry of FONT_CATALOG) {
   for (const file of [entry.files.regular, entry.files.bold]) {
     ok(existsSync(path.join(dir, file)), `${entry.family} → ${file}`);
   }
+}
+
+console.log('verify-fonts: catalog không dính họ trong blacklist');
+for (const family of FONT_BLACKLIST) {
+  ok(!FONT_CATALOG.some((f) => f.family === family), `${family} nằm ngoài catalog`);
 }
 
 console.log('verify-fonts: family name trong TTF khớp catalog');

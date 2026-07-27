@@ -86,7 +86,7 @@ function safeFontName(font: string): string {
 //
 // Dùng numpad (top=8, middle=5) như trực giác sẽ ra "giữa khung căn trái" và "trên căn trái".
 // scripts/verify-subtitle-render.mts đo lại vị trí thật nên đổi hành vi là test đỏ.
-function alignmentOf(position: SubtitleStyle['position']): number {
+export function alignmentOf(position: SubtitleStyle['position']): number {
   return position === 'top' ? 6 : position === 'middle' ? 10 : 2;
 }
 

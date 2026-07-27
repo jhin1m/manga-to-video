@@ -49,8 +49,8 @@ export interface KenburnsPlan {
 // Region coi là "dải" khi cạnh này gấp ≥1.6 cạnh kia; pan (auto) chỉ khả thi khi
 // scale-phủ-trục còn lại cho quãng chạy hợp lý (≥1.05× so với fit) — vượt trần thì phóng
 // đại quá đà → rơi về zoom + blur-fill.
-const STRIP_SHAPE = 1.6;
-const PAN_MIN_COVER = 1.05;
+export const STRIP_SHAPE = 1.6;
+export const PAN_MIN_COVER = 1.05;
 // Trần phần dư phụ thuộc hình dáng KHUNG, không phải một hằng số duy nhất: coverV =
 // tallness × frameRatio, nên cùng con số cho ra hai dải tallness khác hẳn nhau. Khung
 // dọc/vuông giữ 3 (dải tallness 1.60–5.33). Khung ngang buộc phóng ảnh nguồn 720px lên
@@ -58,16 +58,16 @@ const PAN_MIN_COVER = 1.05;
 // trong khi slice manhwa thật có trung vị 1.97: đo trên chương 116 slice chỉ 4 slice được
 // lia, 112 rơi vào blur-fill và chỉ chiếm 18% bề rộng khung. Trần 6 cho 89/116 lia mà mỗi
 // khung vẫn thấy ≥1/6 chiều cao slice.
-const PAN_MAX_COVER = 3;
-const PAN_MAX_COVER_WIDE = 6;
+export const PAN_MAX_COVER = 3;
+export const PAN_MAX_COVER_WIDE = 6;
 const panMaxCover = (frameRatio: number) =>
   frameRatio > 1 ? PAN_MAX_COVER_WIDE : PAN_MAX_COVER;
 // Kẹp vận tốc pan: quãng chạy ≤ 35% chiều khung hình mỗi giây (chống pan giật khi band
 // quá cao mà shot ngắn).
-const MAX_PAN_FRAME_PER_SEC = 0.35;
+export const MAX_PAN_FRAME_PER_SEC = 0.35;
 // Hệ số supersample chống lượng tử hoá integer của crop/zoompan (xem header). Pan chỉ
 // nhân theo trục pan (trục kia không có toạ độ động); zoom nhân cả hai chiều fg.
-const SUPERSAMPLE = 4;
+export const SUPERSAMPLE = 4;
 // Khung trung gian của pan là (cạnh ngang trục) × (cạnh dọc trục đã scale × S). Với khung
 // ngang và slice manhwa cao nó lên tới 45.9 MP — đo thực tế 5.5s render cho 2.8s video.
 // Vượt trần thì hạ supersample còn 2: pan chạy ~9px/frame nên sai số lượng tử 0.5px không
@@ -76,8 +76,8 @@ const SUPERSAMPLE = 4;
 // ⇒ scaledH ≤ 3H ⇒ 1080 × 3·1920 × 4 = 24.9 MP < 26 MP. Nên mọi pan auto 9:16 và 1:1 giữ
 // nguyên từng byte. Pan ÉP thủ công bỏ qua trần cover nên vẫn có thể chạm ngưỡng này —
 // đúng ý đồ: đó chính là những cú pan phóng đại nhất, cần hạ supersample nhất.
-const PAN_SUPERSAMPLE_MAX_PX = 26_000_000;
-const PAN_SUPERSAMPLE_LOW = 2;
+export const PAN_SUPERSAMPLE_MAX_PX = 26_000_000;
+export const PAN_SUPERSAMPLE_LOW = 2;
 const panSupersample = (crossAxisPx: number, scaledPx: number) =>
   crossAxisPx * scaledPx * SUPERSAMPLE > PAN_SUPERSAMPLE_MAX_PX ? PAN_SUPERSAMPLE_LOW : SUPERSAMPLE;
 

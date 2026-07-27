@@ -31,13 +31,13 @@ import {
 //
 // Mức hiện tại cắt dè: 150 mảnh, ~2.3s mỗi shot. Đổi lại vẫn còn ~65 mảnh đủ cao để lia
 // dọc — chấp nhận có chủ ý, không phải sót.
-const SHOT_MAX_HEIGHT_DEFAULT = 1100;
+export const SHOT_MAX_HEIGHT_DEFAULT = 1100;
 // Sàn 0.6× như ingest. mergeLowInkBands gộp mảnh cuối vào mảnh trước khi nó thấp hơn sàn,
 // nên sàn cao khiến trần chỉ có hiệu lực với band ≥ ~1760px — band 1148 cắt ra 700+448 thì
 // mảnh 448 bị gộp ngược, band về nguyên. Đó KHÔNG phải rò rỉ cần vá: nó giữ mảnh nguyên
 // vẹn và là một nửa lý do mức này dễ xem hơn. Hạ xuống 0.35× thì trần siết đúng nhưng
 // mảnh vụn nhiều hơn hẳn.
-const MIN_BAND_RATIO = 0.6;
+export const MIN_BAND_RATIO = 0.6;
 
 export function readShotSplitSettings(): SplitSettings {
   const parsed = Number.parseInt(process.env.SHOT_MAX_HEIGHT ?? '', 10);

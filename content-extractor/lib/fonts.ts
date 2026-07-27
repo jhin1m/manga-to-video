@@ -6,9 +6,8 @@
 // `family` phải khớp TUYỆT ĐỐI tên family bên trong file TTF (libass match theo family name,
 // không theo tên file). Giá trị dưới đây đọc bằng `fc-scan --format '%{family[0]}'`.
 //
-// Mọi họ ở đây đã kiểm bằng fc-query là có đủ glyph tiếng Việt (ệ ữ ẫ đ Đ). KHÔNG thêm
-// Anton / Bebas Neue / Archivo Black / Alfa Slab One / Fredoka / Bungee — chúng thiếu dấu
-// tiếng Việt dù rất hay được chọn cho phụ đề.
+// Mọi họ ở đây đã kiểm bằng fc-query là có đủ glyph tiếng Việt (ệ ữ ẫ đ Đ). Danh sách họ
+// KHÔNG được thêm nằm ở FONT_BLACKLIST cuối file.
 //
 // Module THUẦN (không node:*) vì panel phụ đề phía client import trực tiếp. Đường dẫn thư
 // mục font trên đĩa cho libass nằm ở lib/ffmpeg.ts (phía server).
@@ -69,6 +68,18 @@ export const FONT_CATALOG: FontEntry[] = [
     category: 'serif',
     note: 'Có chân, tông cổ trang',
   },
+];
+
+// Họ font caption phổ biến nhưng THIẾU dấu tiếng Việt — libass im lặng rơi về font hệ thống
+// (hoặc ra ô vuông tofu), không lỗi nào bắn ra. Không được có mặt trong FONT_CATALOG;
+// skill Python cũng đọc danh sách này qua schemas/parity.json để cảnh báo người dùng.
+export const FONT_BLACKLIST = [
+  'Anton',
+  'Bebas Neue',
+  'Archivo Black',
+  'Alfa Slab One',
+  'Fredoka',
+  'Bungee',
 ];
 
 export const DEFAULT_FONT = 'Be Vietnam Pro';
