@@ -7,7 +7,14 @@ import type {
   ChatCompletionMessageParam,
 } from 'openai/resources/chat/completions';
 import type { SceneContent } from './schema';
-import { isZaiProvider, readAiSettings, resolveApiKey } from './settings';
+import {
+  MAX_TOKENS_ENV,
+  envExtraParams,
+  readAiSettings,
+  resolveApiKey,
+  stageConfig,
+  stageExtraParams,
+} from './settings';
 
 export interface VisionConfig {
   apiKey: string;
@@ -15,7 +22,9 @@ export interface VisionConfig {
   model: string;
   maxEdge: number;
   concurrency: number;
-  disableThinking: boolean;
+  /** Param ngoài chuẩn OpenAI (tắt reasoning, trần token) — tính sẵn theo provider ở tầng
+   *  config, xem lib/settings.ts. Ở đây chỉ spread vào request, không diễn giải. */
+  extraParams: Record<string, unknown>;
   rpm: number; // nhịp tối đa (requests/phút) khi chạy vision hàng loạt — chặn 429 chủ động
 }
 
@@ -29,21 +38,21 @@ export function readVisionConfig(): VisionConfig {
     rpm: Number.isFinite(rpm) && rpm > 0 ? rpm : 30,
   };
 
-  // Có settings từ UI → settings quyết định provider/model/thinking; key vẫn lấy từ ENV
-  // theo provider. Cờ disableThinking chỉ áp cho z.ai — provider khác không nhận param GLM.
+  // Có settings từ UI → nhánh vision của settings quyết định provider/model/key/thinking.
   const settings = readAiSettings();
   if (settings) {
-    const { apiKey, keyEnv } = resolveApiKey(settings.provider);
+    const cfg = stageConfig(settings, 'vision');
+    const { apiKey, keyEnv } = resolveApiKey(cfg);
     if (!apiKey) {
       throw new Error(
-        `Thiếu ${keyEnv} (hoặc OPENAI_API_KEY) trong .env.local cho provider "${settings.provider}" đã chọn ở Settings.`,
+        `Thiếu API key cho provider "${cfg.provider}" đã chọn ở Settings — nhập key trong Settings hoặc khai báo ${keyEnv} (hoặc OPENAI_API_KEY) trong .env.local.`,
       );
     }
     return {
       apiKey,
-      baseURL: settings.baseURL,
-      model: settings.visionModel || process.env.VISION_MODEL || 'gpt-4o-mini',
-      disableThinking: isZaiProvider(settings.provider) && settings.disableThinking,
+      baseURL: cfg.baseURL,
+      model: cfg.model || process.env.VISION_MODEL || 'gpt-4o-mini',
+      extraParams: stageExtraParams(cfg),
       ...tuning,
     };
   }
@@ -52,11 +61,12 @@ export function readVisionConfig(): VisionConfig {
   if (!apiKey) {
     throw new Error('Thiếu OPENAI_API_KEY — khai báo trong .env.local (xem .env.example).');
   }
+  const baseURL = process.env.OPENAI_BASE_URL || undefined;
   return {
     apiKey,
-    baseURL: process.env.OPENAI_BASE_URL || undefined,
+    baseURL,
     model: process.env.VISION_MODEL || 'gpt-4o-mini',
-    disableThinking: /^(true|1|yes)$/i.test(process.env.VISION_DISABLE_THINKING ?? ''),
+    extraParams: envExtraParams(/^(true|1|yes)$/i.test(process.env.VISION_DISABLE_THINKING ?? '')),
     ...tuning,
   };
 }
@@ -99,15 +109,6 @@ function statusOf(err: unknown): number | undefined {
 function isJsonModeRejection(err: unknown): boolean {
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
   return /response_format|json_object|json mode|json_schema|json schema/.test(msg);
-}
-
-// Trần token output. Để trống = giữ mặc định của endpoint. Đặt khi model reasoning
-// (Gemini 2.5, GLM) đốt ngân sách output vào phần suy nghĩ làm JSON bị cắt giữa chừng.
-const MAX_TOKENS_ENV = 'MODEL_MAX_TOKENS';
-
-function readMaxTokens(): number | undefined {
-  const n = Number.parseInt(process.env[MAX_TOKENS_ENV] ?? '', 10);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 // Trích đoạn output model cho log/thông báo lỗi: giữ đầu + đuôi, bỏ giữa. Thiếu cái này
@@ -163,24 +164,19 @@ export async function withRetry<T>(fn: (attempt: number) => Promise<T>, tries = 
   throw lastErr;
 }
 
-// Gọi chat.completions với json-mode adaptive + tắt thinking — dùng chung cho vision và
-// script (biên kịch). Cờ jsonModeSupported process-wide: endpoint từ chối json-mode một lần
-// thì thôi luôn (mất tối ưu, không mất đúng đắn). jsonMode=false cho output văn bản thuần
-// (vd recap) — ép json_object ở đó làm model trả JSON dù prompt đòi plain text.
+// Gọi chat.completions với json-mode adaptive — dùng chung cho vision và script (biên kịch).
+// Cờ jsonModeSupported process-wide: endpoint từ chối json-mode một lần thì thôi luôn (mất
+// tối ưu, không mất đúng đắn). jsonMode=false cho output văn bản thuần (vd recap) — ép
+// json_object ở đó làm model trả JSON dù prompt đòi plain text.
+// extraParams đã được tầng config tính sẵn theo provider (tắt reasoning, trần token) —
+// hàm này KHÔNG diễn giải, chỉ spread. Param ngoài chuẩn OpenAI nên cast qua base type.
 export async function createCompletion(
   client: OpenAI,
   model: string,
   messages: ChatCompletionMessageParam[],
-  disableThinking: boolean,
+  extra: Record<string, unknown>,
   jsonMode = true,
 ): Promise<ChatCompletion> {
-  // Với model reasoning của z.ai (GLM), tắt "thinking" giảm ~50% token cho tác vụ đọc
-  // ảnh vốn không cần suy luận sâu. Param ngoài chuẩn OpenAI nên cast qua base type.
-  const maxTokens = readMaxTokens();
-  const extra = {
-    ...(disableThinking ? { thinking: { type: 'disabled' } } : {}),
-    ...(maxTokens ? { max_tokens: maxTokens } : {}),
-  };
   if (jsonModeSupported && jsonMode) {
     try {
       return await client.chat.completions.create({
@@ -235,11 +231,11 @@ function diagnoseAndParse<T>(
     // finish_reason='length' = chạm trần token, output cắt giữa chừng. Gọi lại y hệt sẽ
     // cắt y hệt → báo cách chữa thay vì đốt thêm 3 lượt.
     if (finish === 'length') {
-      // KHÔNG khuyên "tắt reasoning": công tắc disableThinking ở Settings hiện chỉ áp
-      // cho z.ai (isZaiProvider), nên với OpenRouter/OpenAI nó là no-op — chỉ nêu hai
-      // cách thật sự có tác dụng hôm nay.
+      // Công tắc "tắt thinking" ở Settings nay có tác dụng thật với z.ai, Google và
+      // OpenRouter (mỗi nơi một dạng param — xem lib/ai-providers.ts); với OpenAI/DeepSeek/
+      // Groq nó vẫn là no-op nên UI ẩn luôn công tắc, không nêu ở đây làm lạc hướng.
       throw new ModelOutputError(
-        `Output bị cắt vì chạm trần token (finish_reason=length). Tăng ${MAX_TOKENS_ENV} trong .env.local, hoặc chia nhỏ đầu vào (bớt số band mỗi lần tạo kịch bản)`,
+        `Output bị cắt vì chạm trần token (finish_reason=length). Tăng ${MAX_TOKENS_ENV} trong .env.local, bật "Tắt thinking" ở Settings nếu nhà cung cấp hỗ trợ, hoặc chia nhỏ đầu vào (bớt số band mỗi lần tạo kịch bản)`,
         content,
         false,
       );
@@ -255,7 +251,7 @@ export async function completeJson<T>(
   client: OpenAI,
   model: string,
   messages: ChatCompletionMessageParam[],
-  disableThinking: boolean,
+  extraParams: Record<string, unknown>,
   parse: (raw: string | null | undefined) => T,
   label: string,
 ): Promise<T> {
@@ -264,7 +260,7 @@ export async function completeJson<T>(
       client,
       model,
       attempt === 0 ? messages : [...messages, REPAIR_NUDGE],
-      disableThinking,
+      extraParams,
     );
     const choice = res.choices[0];
     const finish = choice?.finish_reason;
@@ -294,14 +290,12 @@ export async function createCompletionStream(
   client: OpenAI,
   model: string,
   messages: ChatCompletionMessageParam[],
-  disableThinking: boolean,
+  extraParams: Record<string, unknown>,
   onDelta?: (chars: number) => void,
   jsonMode = true,
 ): Promise<{ content: string; finish: string | undefined }> {
-  const maxTokens = readMaxTokens();
   const extra = {
-    ...(disableThinking ? { thinking: { type: 'disabled' } } : {}),
-    ...(maxTokens ? { max_tokens: maxTokens } : {}),
+    ...extraParams,
     ...(jsonModeSupported && jsonMode ? { response_format: { type: 'json_object' } } : {}),
   };
 
@@ -318,7 +312,7 @@ export async function createCompletionStream(
     if (statusOf(err) === 400 && isJsonModeRejection(err)) {
       jsonModeSupported = false;
       console.warn('[model] endpoint từ chối json-mode (stream) — tắt cho tiến trình này');
-      return createCompletionStream(client, model, messages, disableThinking, onDelta, false);
+      return createCompletionStream(client, model, messages, extraParams, onDelta, false);
     }
     throw new StreamUnsupportedError(err);
   }
@@ -361,7 +355,7 @@ export async function completeJsonStream<T>(
   client: OpenAI,
   model: string,
   messages: ChatCompletionMessageParam[],
-  disableThinking: boolean,
+  extraParams: Record<string, unknown>,
   parse: (raw: string | null | undefined) => T,
   label: string,
   hooks?: { onDelta?: (chars: number) => void; onAttempt?: (attempt: number) => void },
@@ -372,7 +366,7 @@ export async function completeJsonStream<T>(
       client,
       model,
       attempt === 0 ? messages : [...messages, REPAIR_NUDGE],
-      disableThinking,
+      extraParams,
       hooks?.onDelta,
     );
     console.log(`[${label}] stream chars=${content.length} finish=${finish ?? '?'}`);
@@ -511,7 +505,7 @@ export async function describeImage(
     client,
     config.model,
     messages,
-    config.disableThinking,
+    config.extraParams,
     parseSceneJSON,
     `vision ${filename ?? '?'}`,
   );

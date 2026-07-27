@@ -1,6 +1,6 @@
 import { withRetry } from '../vision';
 import { PROVIDER_LABELS } from './catalog';
-import type { TtsConfig, TtsProvider } from './types';
+import type { TtsConfig, TtsProvider, TtsVoice } from './types';
 
 // Provider ElevenLabs — di chuyển nguyên fetchTts/statusOf từ lib/tts.ts, hành vi KHÔNG đổi
 // (headers, timeout 120s, phân loại 429/5xx qua withRetry). Cache/atomic/probe do lib/tts.ts lo.
@@ -31,7 +31,19 @@ async function fetchTts(text: string, cfg: TtsConfig): Promise<Buffer> {
 export const elevenlabsProvider: TtsProvider = {
   id: 'elevenlabs',
   label: PROVIDER_LABELS.elevenlabs,
-  // Không có catalog cố định — voiceId là chuỗi tự do (voice library ElevenLabs).
+  // Không có catalog cố định — giọng phụ thuộc TÀI KHOẢN (voice library riêng từng người),
+  // nên phải hỏi API thay vì hard-code danh sách.
+  async listVoices(cfg: TtsConfig): Promise<TtsVoice[]> {
+    const res = await fetch(`${cfg.baseUrl}/v1/voices`, {
+      headers: { 'xi-api-key': cfg.apiKey, accept: 'application/json' },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw statusOf(res);
+    const data = (await res.json()) as { voices?: Array<{ voice_id?: string; name?: string }> };
+    return (data.voices ?? [])
+      .filter((v): v is { voice_id: string; name?: string } => Boolean(v.voice_id))
+      .map((v) => ({ id: v.voice_id, label: v.name ?? v.voice_id }));
+  },
   async synth(text: string, cfg: TtsConfig): Promise<Buffer> {
     if (!cfg.apiKey) {
       throw new Error('Thiếu ELEVENLABS_API_KEY — khai báo trong .env.local (xem .env.example).');

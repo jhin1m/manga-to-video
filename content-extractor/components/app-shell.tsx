@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { FolderOpen, Save } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { SettingsDialog } from '@/components/settings-dialog';
+import { SettingsDialog } from '@/components/settings/settings-dialog';
 import { StageStepper } from '@/components/stage-stepper';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { useProject } from '@/components/project-context';

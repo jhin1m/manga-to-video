@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { probeDurationSec } from './ffmpeg';
+import { readAiSettings } from './settings';
 import { DEFAULT_PROVIDER_ID, getTtsProvider } from './tts-providers';
 import type { TtsConfig } from './tts-providers';
 
@@ -21,25 +22,38 @@ function resolveProviderId(override?: string): string {
   return id;
 }
 
+// Câu mẫu nút "Nghe thử" trong Settings. HẰNG SỐ dùng chung (không viết inline ở nhiều chỗ):
+// mọi lần nghe thử cùng giọng dùng chung một entry cache → synth 1 lần, nghe lại miễn phí.
+export const TTS_PREVIEW_SAMPLE = 'Đây là giọng đọc thử cho video recap truyện tranh.';
+
+// Chuỗi ưu tiên: overrides (renderConfig của job) > .settings.json.tts > ENV > default.
 export function readTtsConfig(overrides?: {
   provider?: string;
   voiceId?: string;
   model?: string;
 }): TtsConfig {
-  const provider = resolveProviderId(overrides?.provider);
+  const saved = readAiSettings()?.tts ?? null;
+  const provider = resolveProviderId(overrides?.provider || saved?.provider);
+  // Settings TTS chỉ áp khi provider HIỆU DỤNG trùng provider đã cấu hình. Job override sang
+  // nhà khác mà vẫn lấy giọng/key nhà cũ là sai chắc chắn (giọng CapCut gửi cho ElevenLabs).
+  const st = saved && saved.provider === provider ? saved : null;
   const isElevenlabs = provider === 'elevenlabs';
   return {
     provider,
     // apiKey không còn ném lỗi tại đây — provider ElevenLabs tự kiểm khi thực sự synth,
     // nên chọn CapCut không bắt buộc khai báo ELEVENLABS_API_KEY.
-    apiKey: process.env.ELEVENLABS_API_KEY || '',
+    apiKey: st?.apiKey || process.env.ELEVENLABS_API_KEY || '',
     baseUrl: (process.env.ELEVENLABS_BASE_URL || 'https://api.elevenlabs.io').replace(/\/$/, ''),
     // Default giọng/model theo ElevenLabs CHỈ khi provider là elevenlabs — giữ NGUYÊN cache
     // key cũ. Provider khác tự resolve giọng mặc định trong synth (vd CapCut → CAPCUT_VOICE).
     voiceId:
-      overrides?.voiceId || (isElevenlabs ? process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM' : ''),
+      overrides?.voiceId ||
+      st?.voiceId ||
+      (isElevenlabs ? process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM' : ''),
     model:
-      overrides?.model || (isElevenlabs ? process.env.ELEVENLABS_MODEL || 'eleven_multilingual_v2' : ''),
+      overrides?.model ||
+      st?.model ||
+      (isElevenlabs ? process.env.ELEVENLABS_MODEL || 'eleven_multilingual_v2' : ''),
     cacheDir: process.env.TTS_CACHE_DIR || path.join('.cache', 'tts'),
   };
 }
