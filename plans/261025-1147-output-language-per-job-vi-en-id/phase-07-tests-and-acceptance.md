@@ -1,7 +1,7 @@
 ---
 phase: 7
 title: "Tests and acceptance"
-status: pending
+status: completed
 priority: P1
 effort: "3h"
 dependencies: [6]
@@ -31,7 +31,7 @@ Nghiệm thu thật (AC2/AC4/AC7):
 Dùng `next start` :3105 cho e2e (memory `next16-e2e-next-start`), không kill dev :3000 của user.
 
 ## Success Criteria
-- [ ] Mọi AC trong plan.md tick được, kèm bằng chứng (log/hash/file) ghi vào `reports/`.
+- [x] Mọi AC trong plan.md tick được, kèm bằng chứng (log/hash/file) ghi vào `reports/`.
 
 ## Risk Assessment
 Model vision/biên kịch lẫn tiếng Việt với en/id → xem Risk Phase 4. Hết quota z.ai/CapCut → ghi rõ AC nào chưa nghiệm thu thật, không giả kết quả.

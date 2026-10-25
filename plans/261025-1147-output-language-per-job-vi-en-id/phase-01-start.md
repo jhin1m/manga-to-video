@@ -1,7 +1,7 @@
 ---
 phase: 1
 title: "Baseline guards"
-status: pending
+status: completed
 priority: P1
 effort: "1h"
 dependencies: []

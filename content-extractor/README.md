@@ -2,9 +2,11 @@
 
 Tool nội bộ, một người vận hành. Pipeline: **Nhận chapter → Storyboard → Kịch bản → Video.**
 
-**Nhận chapter (`/`):** nhận nhiều ảnh đánh số / file zip / file PDF → **gộp toàn bộ thành một canvas dọc rồi chia lại thành band tại gutter** (khoảng trắng ngang dày) — mỗi band giữ trọn một đơn vị nội dung (nhân vật kèm bong bóng), không cắt ngang bubble/chữ → xem trước lưới band, xoá band thừa, nhập ngữ cảnh chương → **Tạo storyboard**. Trang này KHÔNG gọi vision.
+**Nhận chapter (`/`):** nhận nhiều ảnh đánh số / file zip / file PDF → **gộp toàn bộ thành một canvas dọc rồi chia lại thành band tại gutter** (khoảng trắng ngang dày) — mỗi band giữ trọn một đơn vị nội dung (nhân vật kèm bong bóng), không cắt ngang bubble/chữ → xem trước lưới band, xoá band thừa, nhập ngữ cảnh chương, chọn **ngôn ngữ đầu ra** (`vi` mặc định / `en` / `id`) → **Tạo storyboard**. Trang này KHÔNG gọi vision.
 
-**Storyboard:** danh sách nhịp hình ảnh + lời đọc (dành cho TTS + video tạo Ken Burns). Mỗi band từ lúc upload = 1 nhịp — biên nhịp đã chuẩn từ ingest nên không cần tách/gộp tay. Nhịp khởi tạo **pending sạch** (chưa có lời đọc); bấm **Generate all** (batch vision toàn bộ nhịp pending/lỗi, giãn nhịp theo RPM, tiến độ live) hoặc **Generate ✨** từng nhịp, hoặc điền tay. Nội dung vision (`mô tả + thoại`, tiếng Việt) được lưu lại để bước Kịch bản dùng — không gọi vision lần hai.
+**Ngôn ngữ đầu ra (theo job):** áp cho mô tả + thoại vision (thoại được dịch sang ngôn ngữ đã chọn), kịch bản, recap và giọng TTS. Lưu trong `.mtvproj` và bundle; file cũ không có field = `vi`. Trang video chỉ liệt kê giọng CapCut đúng ngôn ngữ job; giọng đã lưu sai ngôn ngữ tự đổi sang giọng đầu tiên của ngôn ngữ đó (`id` mặc định Shinta). Marker recap `Kết chương: ` giữ nguyên ở mọi ngôn ngữ.
+
+**Storyboard:** danh sách nhịp hình ảnh + lời đọc (dành cho TTS + video tạo Ken Burns). Mỗi band từ lúc upload = 1 nhịp — biên nhịp đã chuẩn từ ingest nên không cần tách/gộp tay. Nhịp khởi tạo **pending sạch** (chưa có lời đọc); bấm **Generate all** (batch vision toàn bộ nhịp pending/lỗi, giãn nhịp theo RPM, tiến độ live) hoặc **Generate ✨** từng nhịp, hoặc điền tay. Nội dung vision (`mô tả + thoại`, theo ngôn ngữ đầu ra của job) được lưu lại để bước Kịch bản dùng — không gọi vision lần hai.
 
 **Stage 2:** **Kịch bản AI + Video.** Model text (biên kịch) đọc nội dung mọi band → viết kịch bản kể mạch lạc, **gộp/tách band** thành `ScriptSegment[]` (1 lời kể ↔ 1+ shot) → người duyệt/sửa/chốt ở UI → preview video xấp xỉ (`/video/{jobId}`, Ken Burns CSS + phụ đề live + BGM) → export **bundle.zip** → CLI ffmpeg render **MP4 + .srt + timeline.json**. Bất biến sync: audio TTS là nhạc trưởng — narration khớp cứng với segment, audio phân bổ cho các shot theo weight.
 
@@ -57,7 +59,7 @@ Chuyển sang Z.AI GLM: `OPENAI_BASE_URL=https://api.z.ai/api/paas/v4` + `VISION
 Hai provider chọn được. Chọn **per-project** bằng dropdown ở trang video (rỗng = theo ENV), hoặc mặc định qua `TTS_PROVIDER`. Provider abstraction: thêm provider mới = 1 file trong `lib/tts-providers/`. Cache đĩa dùng chung (preview synth 1 lần → CLI tái dùng); key ElevenLabs giữ nguyên công thức cũ nên **không đốt lại cache đã trả phí**.
 
 - **ElevenLabs** — trả phí theo ký tự, chất lượng cao. Voice ID tự do từ voice library.
-- **CapCut** — **miễn phí**, có sẵn giọng Việt (chọn trong dropdown catalog). ⚠️ **API nội bộ reverse-engineered, KHÔNG chính thức — có thể ngừng hoạt động bất cứ lúc nào.** Khi CapCut lỗi, hệ thống **không tự fallback** (tránh âm thầm đốt quota trả phí): báo lỗi rõ kèm gợi ý đổi `TTS_PROVIDER=elevenlabs` (đường lùi).
+- **CapCut** — **miễn phí**, có sẵn giọng Việt, Anh, Indonesia (dropdown catalog lọc theo ngôn ngữ job). ⚠️ **API nội bộ reverse-engineered, KHÔNG chính thức — có thể ngừng hoạt động bất cứ lúc nào.** Khi CapCut lỗi, hệ thống **không tự fallback** (tránh âm thầm đốt quota trả phí): báo lỗi rõ kèm gợi ý đổi `TTS_PROVIDER=elevenlabs` (đường lùi).
 
 | Biến | Ý nghĩa | Mặc định |
 |------|---------|----------|

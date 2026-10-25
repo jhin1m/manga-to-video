@@ -1,7 +1,7 @@
 ---
 phase: 2
 title: "Language catalog and CapCut voice spike"
-status: pending
+status: completed
 priority: P1
 effort: "3h"
 dependencies: [1]

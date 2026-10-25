@@ -1,7 +1,7 @@
 ---
 phase: 4
 title: "Language-aware prompts"
-status: pending
+status: completed
 priority: P1
 effort: "3h"
 dependencies: [2, 3]

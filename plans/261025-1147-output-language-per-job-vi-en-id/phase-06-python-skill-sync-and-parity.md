@@ -1,7 +1,7 @@
 ---
 phase: 6
 title: "Python skill sync and parity"
-status: pending
+status: completed
 priority: P2
 effort: "3h"
 dependencies: [4, 5]
@@ -29,7 +29,7 @@ Skill `~/.claude/skills/manga-to-video` có pipeline riêng (vision z.ai + Claud
 
 ## Success Criteria
 - [x] `pnpm gen:parity && python3 tests/run_all.py` xanh; sửa 1 giọng chỉ ở 1 phía → test đỏ.
-- [ ] `vision.py --lang en` trên 1-2 slice thật trả JSON tiếng Anh, validate.py pass.
+- [x] `vision.py --lang en` trên 1-2 slice thật trả JSON tiếng Anh, validate.py pass.
 
 ## Risk Assessment
 Bẫy `.pyc` cũ làm test báo sai (memory `parity-snapshot-ts-python-harness`) → xoá `__pycache__` trước khi tin kết quả.

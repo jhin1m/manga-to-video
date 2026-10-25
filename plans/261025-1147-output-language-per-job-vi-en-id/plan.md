@@ -1,8 +1,8 @@
 ---
 title: "Chọn ngôn ngữ đầu ra theo job (vi/en/id)"
 description: "outputLanguage per-job: vision dịch thoại + biên kịch + recap + TTS chọn giọng theo ngôn ngữ; đồng bộ skill Python + lưới parity"
-status: in-progress
-status_note: "Code + test xong (unit 736 ✓, e2e mock, build, skill 4/4, review DONE_WITH_CONCERNS đã sửa M1-M3 + L2/L3/L4/L5/L6/L7). CHỜ: vision thật en/id — key z.ai trong .secrets.json của skill trả 401. Giọng id mặc định = Shinta (id_female_noor) theo user."
+status: completed
+status_note: "Xong. Nghiệm thu thật 2026-10-25 qua OpenRouter gemini-2.5-flash (z.ai 401): app job en/id 14/14 beat, skill vision en/id 3/3; TTS CapCut en + id (Shinta) và render en có audio. Giới hạn: không có ASR. Xem reports/from-tester-261025-real-vision-acceptance-report.md."
 priority: P1
 effort: "2d"
 tags: [i18n, vision, script, tts, capcut, parity, python-skill]
@@ -36,24 +36,24 @@ ja/zh/ko để sau (cần font CJK + wrap không khoảng trắng) — catalog t
 
 | # | Phase | Status |
 |---|-------|--------|
-| 1 | [Phase 1: Baseline guards](./phase-01-start.md) | Pending |
-| 2 | [Phase 2: Language catalog and CapCut voice spike](./phase-02-language-catalog-and-capcut-voice-spike.md) | Pending |
-| 3 | [Phase 3: Job outputLanguage and persistence](./phase-03-job-outputlanguage-and-persistence.md) | Pending |
-| 4 | [Phase 4: Language-aware prompts](./phase-04-language-aware-prompts.md) | Pending |
-| 5 | [Phase 5: TTS voice by language](./phase-05-tts-voice-by-language.md) | Pending |
-| 6 | [Phase 6: Python skill sync and parity](./phase-06-python-skill-sync-and-parity.md) | Pending |
-| 7 | [Phase 7: Tests and acceptance](./phase-07-tests-and-acceptance.md) | Pending |
+| 1 | [Phase 1: Baseline guards](./phase-01-start.md) | Completed |
+| 2 | [Phase 2: Language catalog and CapCut voice spike](./phase-02-language-catalog-and-capcut-voice-spike.md) | Completed |
+| 3 | [Phase 3: Job outputLanguage and persistence](./phase-03-job-outputlanguage-and-persistence.md) | Completed |
+| 4 | [Phase 4: Language-aware prompts](./phase-04-language-aware-prompts.md) | Completed |
+| 5 | [Phase 5: TTS voice by language](./phase-05-tts-voice-by-language.md) | Completed |
+| 6 | [Phase 6: Python skill sync and parity](./phase-06-python-skill-sync-and-parity.md) | Completed |
+| 7 | [Phase 7: Tests and acceptance](./phase-07-tests-and-acceptance.md) | Completed |
 
 Phụ thuộc: 1 → 2 → (3, 4, 5) → 6 → 7. Phase 3/4/5 cùng đụng call-site nên làm tuần tự, không song song.
 
 ## Acceptance Criteria
 - [x] AC1: Job mới mặc định `vi`; mọi prompt vi giống hệt trước (hash snapshot khớp).
-- [ ] AC2 (code + unit xong; CHỜ vision thật — z.ai 401): Chọn `en` ở trang upload → vision trả description/dialogue tiếng Anh, kịch bản + recap tiếng Anh.
-- [ ] AC3 (TTS id thật PASS với Shinta; CHỜ vision thật): Chọn `id` → tương tự bằng tiếng Indonesia.
+- [x] AC2 (vision thật qua OpenRouter, app + skill): Chọn `en` ở trang upload → vision trả description/dialogue tiếng Anh, kịch bản + recap tiếng Anh.
+- [x] AC3 (vision/kịch bản/recap tiếng Indonesia thật; TTS Shinta): Chọn `id` → tương tự bằng tiếng Indonesia.
 - [x] AC4: Trang video chỉ liệt kê giọng CapCut đúng ngôn ngữ job; voiceId rỗng/sai ngôn ngữ → tự lấy giọng đầu tiên của ngôn ngữ đó; ngôn ngữ không có giọng CapCut → lỗi rõ ràng gợi ý ElevenLabs.
 - [x] AC5: `.mtvproj` + bundle round-trip giữ `outputLanguage`; file cũ mở ra là `vi`.
 - [x] AC6: Skill Python có `--lang` cho vision + hướng dẫn biên kịch theo ngôn ngữ; `pnpm gen:parity` + `tests/run_all.py` bắt được lệch catalog giọng/ngôn ngữ TS↔Py.
-- [ ] AC7 (test/lint/build xanh; TTS CapCut EN thật PASS; CHỜ e2e chương thật có vision): `pnpm test:unit`, `pnpm lint`, `pnpm build` xanh; e2e thật 1 chương ngắn `en` (CapCut EN) nghe được.
+- [x] AC7 (render en thật: h264+aac 129s; nội dung giọng chưa xác minh bằng ASR): `pnpm test:unit`, `pnpm lint`, `pnpm build` xanh; e2e thật 1 chương ngắn `en` (CapCut EN) nghe được.
 
 ## Ngoài phạm vi
 ja/zh/ko; dịch UI app; đổi tốc độ đọc `estimateSeconds` (15 ký tự/s vẫn hợp lý cho en/id — chỉ sửa comment).
