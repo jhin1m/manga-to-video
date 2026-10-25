@@ -1,10 +1,14 @@
 // Kiểu dùng chung cho tầng provider TTS. Tách khỏi lib/tts.ts để provider và registry
 // import được mà không tạo vòng phụ thuộc ngược về orchestration.
+import type { OutputLanguage } from '../output-language';
 
 export interface TtsVoice {
   id: string; // voiceId gửi cho provider (vd voice_type CapCut)
   label: string; // nhãn hiển thị ở UI
   resourceId?: string; // CapCut cần resource_id riêng cho từng giọng
+  // Ngôn ngữ giọng đọc được. Catalog tĩnh (CapCut) luôn khai báo; giọng lấy từ API
+  // (ElevenLabs, đa ngôn ngữ) để trống = không ràng buộc ngôn ngữ.
+  lang?: OutputLanguage;
 }
 
 // Config chung cho một lần synth. Định hình theo ElevenLabs (backward-compat) — provider

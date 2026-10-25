@@ -3,8 +3,10 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { probeDurationSec } from './ffmpeg';
+import { getOutputLanguage, type OutputLanguage } from './output-language';
 import { readAiSettings } from './settings';
 import { DEFAULT_PROVIDER_ID, getTtsProvider } from './tts-providers';
+import { pickVoiceForLang } from './tts-providers/catalog';
 import type { TtsConfig } from './tts-providers';
 
 // TTS với CACHE ĐĨA dùng chung giữa Preview UI và CLI: preview synth 1 lần, CLI tái dùng —
@@ -24,13 +26,18 @@ function resolveProviderId(override?: string): string {
 
 // Câu mẫu nút "Nghe thử" trong Settings. HẰNG SỐ dùng chung (không viết inline ở nhiều chỗ):
 // mọi lần nghe thử cùng giọng dùng chung một entry cache → synth 1 lần, nghe lại miễn phí.
-export const TTS_PREVIEW_SAMPLE = 'Đây là giọng đọc thử cho video recap truyện tranh.';
+// Bản vi giữ là hằng số export (cache nghe thử cũ); ngôn ngữ khác lấy previewSample theo giọng.
+export const TTS_PREVIEW_SAMPLE = getOutputLanguage('vi').previewSample;
 
 // Chuỗi ưu tiên: overrides (renderConfig của job) > .settings.json.tts > ENV > default.
+// `lang` = ngôn ngữ lời kể của job: provider có catalog (CapCut) đổi giọng sai ngôn ngữ sang
+// giọng đầu của ngôn ngữ đó. Đổi giọng PHẢI xảy ra ở đây, trước khi synthSegment tính cache
+// key — key luôn phản ánh đúng giọng sẽ synth. Không truyền lang = hành vi cũ.
 export function readTtsConfig(overrides?: {
   provider?: string;
   voiceId?: string;
   model?: string;
+  lang?: OutputLanguage;
 }): TtsConfig {
   const saved = readAiSettings()?.tts ?? null;
   const provider = resolveProviderId(overrides?.provider || saved?.provider);
@@ -38,6 +45,24 @@ export function readTtsConfig(overrides?: {
   // nhà khác mà vẫn lấy giọng/key nhà cũ là sai chắc chắn (giọng CapCut gửi cho ElevenLabs).
   const st = saved && saved.provider === provider ? saved : null;
   const isElevenlabs = provider === 'elevenlabs';
+  let voiceId =
+    overrides?.voiceId ||
+    st?.voiceId ||
+    (isElevenlabs ? process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM' : '');
+  if (overrides?.lang) {
+    // voiceId rỗng của CapCut nghĩa là "theo CAPCUT_VOICE" — xét luôn giọng ENV đó để job en
+    // không đọc bằng giọng Việt đặt trong .env.local.
+    const candidate = voiceId || (provider === 'capcut' ? process.env.CAPCUT_VOICE || '' : '');
+    const picked = pickVoiceForLang(provider, candidate, overrides.lang);
+    if (picked === null) {
+      const { label } = getOutputLanguage(overrides.lang);
+      throw new Error(
+        `${getTtsProvider(provider).label} chưa có giọng ${label} — chọn ElevenLabs ở trang Dựng video hoặc Settings.`,
+      );
+    }
+    // Giữ voiceId rỗng khi không phải đổi giọng → provider tự resolve như cũ (cache key vi y cũ).
+    if (picked !== candidate) voiceId = picked;
+  }
   return {
     provider,
     // apiKey không còn ném lỗi tại đây — provider ElevenLabs tự kiểm khi thực sự synth,
@@ -46,10 +71,7 @@ export function readTtsConfig(overrides?: {
     baseUrl: (process.env.ELEVENLABS_BASE_URL || 'https://api.elevenlabs.io').replace(/\/$/, ''),
     // Default giọng/model theo ElevenLabs CHỈ khi provider là elevenlabs — giữ NGUYÊN cache
     // key cũ. Provider khác tự resolve giọng mặc định trong synth (vd CapCut → CAPCUT_VOICE).
-    voiceId:
-      overrides?.voiceId ||
-      st?.voiceId ||
-      (isElevenlabs ? process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM' : ''),
+    voiceId,
     model:
       overrides?.model ||
       st?.model ||

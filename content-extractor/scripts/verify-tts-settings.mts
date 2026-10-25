@@ -230,6 +230,74 @@ console.log('14. Route TTS từ chối request cross-site (không để trang kh
   eq((await VOICES(post({ provider: 'capcut' }))).status, 200, 'không có header → vẫn cho qua');
 }
 
+console.log('15. Giọng theo ngôn ngữ job (pickVoiceForLang + readTtsConfig({lang}))');
+{
+  const { pickVoiceForLang, voicesForLang } = await import('@/lib/tts-providers/catalog');
+  ok(
+    CAPCUT_VOICES.every((v) => v.lang === 'vi' || v.lang === 'en' || v.lang === 'id'),
+    'mọi giọng CapCut có lang hợp lệ',
+  );
+  ok((voicesForLang('capcut', 'en') ?? []).length > 0, 'có giọng CapCut en');
+  ok((voicesForLang('capcut', 'id') ?? []).length > 0, 'có giọng CapCut id');
+  eq(voicesForLang('elevenlabs', 'en'), undefined, 'provider không catalog → undefined (không lọc)');
+
+  eq(pickVoiceForLang('capcut', '', 'vi'), '', 'vi + rỗng → giữ rỗng (cache key cũ)');
+  eq(pickVoiceForLang('capcut', 'BV075_streaming', 'vi'), 'BV075_streaming', 'giọng vi đúng ngôn ngữ → giữ');
+  eq(pickVoiceForLang('capcut', '', 'en'), 'BV029_streaming', 'en + rỗng → giọng en đầu tiên');
+  eq(
+    pickVoiceForLang('capcut', 'BV074_streaming', 'id'),
+    'id_female_noor',
+    'giọng vi cho job id → đổi',
+  );
+  eq(pickVoiceForLang('capcut', 'custom_env_voice', 'en'), 'custom_env_voice', 'giọng ngoài catalog → tôn trọng');
+  eq(pickVoiceForLang('elevenlabs', 'abc', 'id'), 'abc', 'provider không catalog → giữ nguyên');
+
+  writeAiSettings(null);
+  // Bất biến vi: có lang='vi' hay không thì config (và vì vậy cache key) y hệt.
+  eq(
+    readTtsConfig({ provider: 'capcut', lang: 'vi' }),
+    readTtsConfig({ provider: 'capcut' }),
+    'capcut vi: lang không đổi config',
+  );
+  eq(
+    readTtsConfig({ provider: 'elevenlabs', voiceId: 'v1', lang: 'en' }).voiceId,
+    'v1',
+    'elevenlabs: lang không đụng voiceId (đa ngôn ngữ)',
+  );
+  eq(
+    readTtsConfig({ provider: 'capcut', voiceId: 'BV074_streaming', lang: 'en' }).voiceId,
+    'BV029_streaming',
+    'capcut en + giọng vi override → giọng en đầu',
+  );
+  // Giọng Việt lưu ở Settings không được lọt vào job en.
+  writeAiSettings(withTts({ provider: 'capcut', voiceId: 'BV075_streaming', model: '', apiKey: null }));
+  eq(readTtsConfig({ lang: 'en' }).voiceId, 'BV029_streaming', 'settings giọng vi + job en → đổi giọng');
+  eq(readTtsConfig({ lang: 'vi' }).voiceId, 'BV075_streaming', 'settings giọng vi + job vi → giữ');
+  writeAiSettings(null);
+  // voiceId rỗng = theo CAPCUT_VOICE: giọng ENV tiếng Việt cũng phải bị đổi cho job id.
+  process.env.CAPCUT_VOICE = 'BV074_streaming';
+  eq(readTtsConfig({ provider: 'capcut', lang: 'id' }).voiceId, 'id_female_noor', 'CAPCUT_VOICE vi + job id → đổi');
+  eq(readTtsConfig({ provider: 'capcut', lang: 'vi' }).voiceId, '', 'CAPCUT_VOICE vi + job vi → giữ rỗng như cũ');
+  delete process.env.CAPCUT_VOICE;
+  let threw = '';
+  try {
+    readTtsConfig({ provider: 'capcut', lang: 'xx' as never });
+  } catch (err) {
+    threw = err instanceof Error ? err.message : String(err);
+  }
+  ok(threw.includes('chưa có giọng') && threw.includes('ElevenLabs'), 'ngôn ngữ không có giọng → lỗi gợi ý ElevenLabs');
+}
+
+console.log('16. Nghe thử: câu mẫu theo ngôn ngữ của giọng');
+{
+  const { getOutputLanguage } = await import('@/lib/output-language');
+  // TTS_PREVIEW_SAMPLE = previewSample vi theo định nghĩa; literal cũ đã khoá ở mục 12.
+  ok(
+    ['en', 'id'].every((l) => getOutputLanguage(l as 'en' | 'id').previewSample !== TTS_PREVIEW_SAMPLE),
+    'câu mẫu en/id khác câu vi (không đọc câu Việt bằng giọng ngoại)',
+  );
+}
+
 rmSync(dir, { recursive: true, force: true });
 if (failures > 0) {
   console.error(`\nverify-tts-settings: ${failures} lỗi`);

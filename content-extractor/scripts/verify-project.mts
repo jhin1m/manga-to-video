@@ -271,6 +271,58 @@ console.log('Test 5: version hằng số khớp hợp đồng schema');
   );
 }
 
+console.log('Test 6: ngôn ngữ đầu ra — .mtvproj, bundle, PATCH job');
+{
+  // .mtvproj: field optional, vắng = vi (file cũ), lạ = từ chối.
+  const withLang = pagesFixture();
+  withLang.project = { ...withLang.project, outputLanguage: 'en' };
+  eq(readProject(writeProject(withLang)).project.outputLanguage, 'en', 'outputLanguage sống qua round-trip');
+  eq(readProject(writeProject(pagesFixture())).project.outputLanguage, undefined, 'file cũ không có field → undefined (=vi)');
+  const badLang = pagesFixture();
+  badLang.project = { ...badLang.project, outputLanguage: 'ja' as never };
+  throws(() => readProject(writeProject(badLang)), 'outputLanguage', 'outputLanguage lạ → từ chối');
+
+  // Bundle: ScriptManifest chỉ mang field khi khác vi → bundle vi giữ nguyên shape cũ.
+  const { readBundle, writeBundle } = await import('../lib/bundle');
+  const { defaultRenderConfig } = await import('../lib/schema');
+  const segs = pagesFixture().script!.segments;
+  const mk = (outputLanguage?: 'vi' | 'en' | 'id') =>
+    toScriptManifest({ jobId: 'job-1', createdAt: 'now', segments: segs, outputLanguage });
+  ok(!('outputLanguage' in mk('vi')) && !('outputLanguage' in mk()), "manifest vi/vắng → không có field (shape cũ)");
+  const images = new Map(segs.flatMap((s) => s.shots.map((sh) => [sh.sourceIndex, jpeg(0x02)] as const)));
+  const bundle = (m: ReturnType<typeof mk>) =>
+    writeBundle({ scriptManifest: m, config: defaultRenderConfig(), images });
+  eq(readBundle(bundle(mk('id'))).scriptManifest.outputLanguage, 'id', 'bundle mang outputLanguage cho CLI render');
+  throws(
+    () => readBundle(bundle({ ...mk(), outputLanguage: 'xx' as never })),
+    'outputLanguage',
+    'bundle outputLanguage lạ → từ chối',
+  );
+
+  // PATCH /api/jobs/[id]: nhận context và/hoặc outputLanguage; lạ → 400, không ghi gì.
+  const { createJob } = await import('../lib/jobs');
+  const { PATCH } = await import('../app/api/jobs/[id]/route');
+  const job = createJob([]);
+  eq(job.outputLanguage, 'vi', 'job mới mặc định vi');
+  const patch = (body: unknown) =>
+    PATCH(
+      new Request('http://localhost/api/jobs/x', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+      { params: Promise.resolve({ id: job.id }) },
+    );
+  let res = await patch({ outputLanguage: 'en' });
+  eq([res.status, (await res.json()).outputLanguage], [200, 'en'], 'PATCH outputLanguage → DTO trả en');
+  res = await patch({ context: 'Ctx', outputLanguage: 'ja' });
+  eq(res.status, 400, 'outputLanguage lạ → 400');
+  eq([job.context, job.outputLanguage], ['', 'en'], 'body hỏng một field → không field nào được ghi');
+  res = await patch({ context: 'Chỉ đổi context' });
+  eq([res.status, job.context, job.outputLanguage], [200, 'Chỉ đổi context', 'en'], 'PATCH chỉ context → giữ ngôn ngữ');
+  eq((await patch({})).status, 400, 'body rỗng → 400');
+}
+
 // Dọn tmp nếu có (giữ khuôn verify-*; hiện không ghi đĩa nhưng để sẵn cho case sau)
 {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'verify-project-'));

@@ -7,11 +7,18 @@ import { Download, FolderInput, Sparkles, Upload, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { PageShell } from '@/components/page-shell';
 import { useProject } from '@/components/project-context';
 import { readNdjson } from '@/lib/ndjson-client';
+import {
+  DEFAULT_OUTPUT_LANGUAGE,
+  OUTPUT_LANGUAGES,
+  normalizeOutputLanguage,
+  type OutputLanguage,
+} from '@/lib/output-language';
 import { cn } from '@/lib/utils';
 import type { IngestStage, ItemDTO, JobStatusDTO, StoryboardDTO } from '@/lib/schema';
 
@@ -111,6 +118,9 @@ export default function Home() {
   const [items, setItems] = useState<ItemDTO[]>([]);
   const [context, setContext] = useState(''); // ngữ cảnh chương — tiêm vào vision + biên kịch
   const savedContext = useRef(''); // bản đã PATCH lên server — chỉ gửi lại khi có thay đổi
+  // Ngôn ngữ đầu ra của job — PATCH ngay khi đổi (dropdown không có onBlur để chờ).
+  const [outputLanguage, setOutputLanguage] = useState<OutputLanguage>(DEFAULT_OUTPUT_LANGUAGE);
+  const [langBusy, setLangBusy] = useState(false);
   const [sbBusy, setSbBusy] = useState(false);
   const seriesInput = useRef<HTMLInputElement>(null); // file picker bible/summaries (series-memory)
   const [recapBusy, setRecapBusy] = useState(false);
@@ -155,6 +165,7 @@ export default function Home() {
       setItems(dto.items); // thumbnail xem trước, đúng thứ tự đọc
       setContext(dto.context);
       savedContext.current = dto.context;
+      setOutputLanguage(normalizeOutputLanguage(dto.outputLanguage));
       publish({ jobId: dto.jobId, dirty: true });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Không tạo được job');
@@ -179,6 +190,30 @@ export default function Home() {
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Không lưu được ngữ cảnh chương');
       return false;
+    }
+  }
+
+  // Đổi ngôn ngữ: PATCH ngay, hỏng thì trả dropdown về giá trị cũ — không để UI báo một ngôn
+  // ngữ trong khi job vẫn chạy ngôn ngữ khác. Trang này chỉ sống trước "Tạo storyboard" nên
+  // chưa có nội dung vision nào bị lệch ngôn ngữ.
+  async function changeOutputLanguage(id: string, next: OutputLanguage) {
+    const prev = outputLanguage;
+    if (next === prev) return;
+    setOutputLanguage(next);
+    setLangBusy(true);
+    try {
+      const dto = await fetchJSON<JobStatusDTO>(`/api/jobs/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ outputLanguage: next }),
+      });
+      setOutputLanguage(normalizeOutputLanguage(dto.outputLanguage));
+      publish({ dirty: true });
+    } catch (err) {
+      setOutputLanguage(prev);
+      toast.error(err instanceof Error ? err.message : 'Không lưu được ngôn ngữ đầu ra');
+    } finally {
+      setLangBusy(false);
     }
   }
 
@@ -285,6 +320,7 @@ export default function Home() {
     setItems([]);
     setContext('');
     savedContext.current = '';
+    setOutputLanguage(DEFAULT_OUTPUT_LANGUAGE);
     reset();
   }
 
@@ -377,7 +413,12 @@ export default function Home() {
                 {items.length} ảnh — đã gộp thành dải dọc và chia lại theo khoảng an toàn
               </span>
               <div className="flex flex-wrap items-center gap-3">
-                <Button variant="ai" onClick={createStoryboard} disabled={sbBusy || items.length === 0}>
+                <Button
+                  variant="ai"
+                  onClick={createStoryboard}
+                  // Chờ PATCH ngôn ngữ xong: vision chạy ngay sau đó đọc job.outputLanguage.
+                  disabled={sbBusy || langBusy || items.length === 0}
+                >
                   <Sparkles data-icon="inline-start" />
                   {sbBusy ? 'Đang tạo…' : 'Tạo storyboard'}
                 </Button>
@@ -387,6 +428,25 @@ export default function Home() {
               </div>
             </CardContent>
             <CardContent className="px-4">
+              <label className="mb-3 flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground">
+                Ngôn ngữ đầu ra (lời thoại, kịch bản, giọng đọc)
+                <Select
+                  value={outputLanguage}
+                  onValueChange={(v) => void changeOutputLanguage(jobId, normalizeOutputLanguage(v))}
+                  disabled={langBusy || sbBusy}
+                >
+                  <SelectTrigger size="sm" className="w-44 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {OUTPUT_LANGUAGES.map((l) => (
+                      <SelectItem key={l.id} value={l.id}>
+                        {l.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
               <label className="block text-xs font-medium text-muted-foreground">
                 Nhân vật &amp; bối cảnh chương (tuỳ chọn — giúp gọi đúng tên nhân vật và xưng hô
                 khi dịch thoại, dùng cho cả Generate lẫn kịch bản)

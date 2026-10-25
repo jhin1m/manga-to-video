@@ -3,6 +3,7 @@
 //   buildTimeline/allocateShots · splitSentences/toSrt (caption tách câu) · bundle round-trip
 //   kenburns (pan-v/pan-h/zoom/blur-fill) · TTS cache MISS/HIT (mock ElevenLabs, cần ffprobe)
 //   TTS CapCut (mock: flow new→poll→audio, cache HIT, key prefix, task fail, timeout)
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
@@ -171,6 +172,72 @@ console.log('Test 1c: buildRecapPrompt — recap series-memory từ script');
   ok(p.includes('250 từ'), 'recap: cap 250 từ nằm trong prompt');
   ok(p.includes('"Kết chương: "'), 'recap: yêu cầu dòng chốt "Kết chương:" (khớp format series.md)');
   ok(p.includes('ngôi thứ ba'), 'recap: giữ lời kể ngôi ba');
+}
+
+console.log('Test 1d: prompt tiếng Việt bất biến từng byte (hash chụp trước khi thêm ngôn ngữ đầu ra)');
+{
+  // Đổi chữ nào trong prompt vi là hash đỏ. Cố ý chặt: prompt vi đã được tinh chỉnh qua nhiều
+  // lượt đo thật (ép dịch thoại, ép ngôi ba) — sửa nó phải là quyết định có chủ đích, khi đó
+  // cập nhật hash ở đây.
+  const h = (s: string) => createHash('sha256').update(s).digest('hex').slice(0, 16);
+  const inputs = [
+    {
+      order: 0,
+      sourceIndex: 0,
+      beatId: 'b0',
+      content: { description: 'Cảnh mở đầu.', dialogue: ['Chào.'], note: 'Hồi tưởng.' },
+      region: null,
+    },
+    { order: 1, sourceIndex: 1, beatId: 'b1', content: null, region: null },
+  ];
+  const segs = [
+    seg({ id: 's0', order: 0, narration: 'Vân Chi tỉnh lại.' }),
+    seg({ id: 's1', order: 1, narration: 'Nàng bước vào phủ.' }),
+  ];
+  eq(h(buildVisionPrompt('')), '7b3e8896d8a9eaf7', 'vision vi không context');
+  eq(h(buildVisionPrompt('Tô Nhược — nữ.')), 'c9286f46198cf3a8', 'vision vi có context');
+  eq(h(buildPrompt(inputs)), '6dd6f0699fdcf860', 'biên kịch vi không context');
+  eq(h(buildPrompt(inputs, 'Lâm Phong — nam chính.')), '38795e8675fc58d4', 'biên kịch vi có context');
+  eq(h(buildRecapPrompt(segs)), '5b1d4a64aedfd41c', 'recap vi');
+  eq(h(buildVisionPrompt('', 'vi')), '7b3e8896d8a9eaf7', "vision lang='vi' tường minh = mặc định");
+  eq(h(buildPrompt(inputs, '', 'vi')), '6dd6f0699fdcf860', "biên kịch lang='vi' tường minh = mặc định");
+  eq(h(buildRecapPrompt(segs, 'vi')), '5b1d4a64aedfd41c', "recap lang='vi' tường minh = mặc định");
+}
+
+console.log('Test 1e: prompt en/id — đổi ngôn ngữ đầu ra, giữ quy tắc');
+{
+  const inputs = [
+    {
+      order: 0,
+      sourceIndex: 0,
+      beatId: 'b0',
+      content: { description: 'Cảnh mở đầu.', dialogue: [], note: '' },
+      region: null,
+    },
+  ];
+  const segs = [seg({ id: 's0', order: 0, narration: 'Ghi chú: - Tối đa 250 từ, tiếng Việt,' })];
+  // Cụm chỉ dẫn tiếng Việt đặc thù phải biến mất ở prompt ngôn ngữ khác.
+  const VI_ONLY = ['bằng TIẾNG VIỆT', 'DỊCH sang tiếng Việt', 'lời kể tiếng Việt', 'hắn, y, cô, nàng', 'ta, ngươi, huynh'];
+  for (const [lang, name] of [
+    ['en', 'tiếng Anh (English)'],
+    ['id', 'tiếng Indonesia (Bahasa Indonesia)'],
+  ] as const) {
+    const v = buildVisionPrompt('', lang);
+    const s = buildPrompt(inputs, 'Lâm Phong — nam chính.', lang);
+    const r = buildRecapPrompt(segs, lang);
+    ok(v.includes(`DỊCH sang ${name}`) && v.includes('PHẢI dịch'), `vision ${lang}: vẫn ép dịch thoại sang đích`);
+    ok(v.includes('ngôi thứ ba'), `vision ${lang}: giữ ép ngôi ba`);
+    ok(s.includes(`Viết lời kể bằng ${name}`), `biên kịch ${lang}: lời kể bằng đích`);
+    ok(s.includes('KHÔNG nhập vai') && s.includes('BÊN TRONG dấu ngoặc kép'), `biên kịch ${lang}: giữ quy tắc ngôi kể`);
+    ok(s.includes('Lâm Phong — nam chính.'), `biên kịch ${lang}: context vẫn chèn`);
+    ok(r.includes(`viết bằng ${name}`) && r.includes('"Kết chương: "'), `recap ${lang}: đích + giữ nhãn Kết chương`);
+    ok(
+      [v, s].every((p) => VI_ONLY.every((frag) => !p.includes(frag))),
+      `${lang}: không còn chỉ dẫn đặc thù tiếng Việt`,
+    );
+    // Lời kể của người dùng ghép SAU phần chỉ dẫn — không bị thay thế nhầm.
+    ok(r.endsWith('Ghi chú: - Tối đa 250 từ, tiếng Việt,'), `recap ${lang}: lời kể người dùng giữ nguyên`);
+  }
 }
 
 console.log('Test 2: generateScript qua mock model (fence ```json + index ngoài biên)');

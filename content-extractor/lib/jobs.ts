@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { DEFAULT_OUTPUT_LANGUAGE, type OutputLanguage } from './output-language';
 import type { ItemDTO, ItemStatus, JobProgress, JobStatusDTO, SceneContent } from './schema';
 
 // Kiểu nội bộ (có Buffer) — tách khỏi schema.ts để schema không phụ thuộc Node.
@@ -24,6 +25,9 @@ export interface Job {
   // Ngữ cảnh chương người dùng nhập (nhân vật/xưng hô/bối cảnh) — nguồn duy nhất cho mọi
   // đường gọi vision (batch, retry, generate beat, script fallback) + prompt biên kịch.
   context: string;
+  // Ngôn ngữ đầu ra (vision dịch thoại, biên kịch, recap, giọng TTS) — cùng tính chất với
+  // context: đọc tại thời điểm mỗi task chạy, đổi giữa chừng không hỏng dữ liệu.
+  outputLanguage: OutputLanguage;
 }
 
 // Singleton trên globalThis — sống sót qua HMR của dev server.
@@ -41,11 +45,13 @@ const bus: EventEmitter = (g.__mrs_bus ??= (() => {
 export function createJob(
   items: Array<{ filename: string; buffer: Buffer; mime: string; width: number; height: number }>,
   context = '',
+  outputLanguage: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
 ): Job {
   const job: Job = {
     id: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
     context,
+    outputLanguage,
     items: items.map((it, index) => ({
       index,
       filename: it.filename,
@@ -70,6 +76,12 @@ export function setJobContext(id: string, context: string): void {
   const job = store.get(id);
   if (!job) return;
   job.context = context;
+}
+
+export function setJobOutputLanguage(id: string, outputLanguage: OutputLanguage): void {
+  const job = store.get(id);
+  if (!job) return;
+  job.outputLanguage = outputLanguage;
 }
 
 export function updateProgress(id: string, patch: Partial<JobProgress>): void {
@@ -145,5 +157,6 @@ export function toJobStatusDTO(job: Job): JobStatusDTO {
     progress: job.progress,
     items: job.items.map((it) => toItemDTO(job.id, it)),
     context: job.context,
+    outputLanguage: job.outputLanguage,
   };
 }

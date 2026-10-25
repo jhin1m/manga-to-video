@@ -62,7 +62,9 @@ D/J07iM/rP8GDO9IskHNHd2phrO0G6KzrcFAnTBHjVv+hCBEfzN/no3FNA9AuC36
 mwIDAQAB
 -----END PUBLIC KEY-----`;
 
-// Catalog giọng Việt (CAPCUT_VOICES) sống ở ./catalog — dữ liệu thuần dùng chung với UI.
+// Catalog giọng (CAPCUT_VOICES, vi/en/id) sống ở ./catalog — dữ liệu thuần dùng chung với UI.
+// SSML (xml:lang) và device profile (lan) KHÔNG đổi theo ngôn ngữ: đo thực nghiệm giọng en/id
+// synth đúng với cấu hình hiện tại — ngôn ngữ do giọng quyết định.
 
 const HINT = 'Đổi TTS_PROVIDER=elevenlabs nếu CapCut không dùng được.';
 

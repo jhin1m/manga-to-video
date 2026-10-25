@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import pLimit from 'p-limit';
+import { getJob } from '@/lib/jobs';
 import { readTtsConfig, synthSegment } from '@/lib/tts';
 import { getScript, getStoryboard, setSegmentAudio } from '@/lib/storyboard-store';
 
@@ -45,7 +46,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   let cfg;
   try {
-    cfg = readTtsConfig({ provider, voiceId, model });
+    // Giọng theo ngôn ngữ lời kể của job (job vắng — vd sau restart — thì không ràng buộc).
+    cfg = readTtsConfig({ provider, voiceId, model, lang: getJob(id)?.outputLanguage });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Cấu hình TTS không hợp lệ';
     return NextResponse.json({ error: message }, { status: 400 });

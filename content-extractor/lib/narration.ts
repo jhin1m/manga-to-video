@@ -73,7 +73,8 @@ export async function composeBeat(
     if (useVision) {
       const band = beat.region ?? { x: 0, y: 0, w: working.width, h: working.height };
       const cropped = await cropRegion(working, band);
-      scene = await describeImage(cropped, `beat#${beat.order}`, getJob(jobId)?.context);
+      const job = getJob(jobId);
+      scene = await describeImage(cropped, `beat#${beat.order}`, job?.context, job?.outputLanguage);
     } else {
       const freshContent = getJob(jobId)?.items[beat.sourceIndex]?.content;
       scene = freshContent ?? working.content ?? null;

@@ -62,6 +62,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       images: built.images,
       ...(bundledAudio ? { bundledAudio } : {}),
       ...(built.bgm ? { bgm: built.bgm } : {}),
+      ...(built.scriptManifest.outputLanguage
+        ? { outputLanguage: built.scriptManifest.outputLanguage }
+        : {}),
     };
 
     const aspectSlug = built.config.aspect.replace(':', 'x');

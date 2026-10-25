@@ -53,6 +53,7 @@ const VOICE_DEFAULT = '__default__';
 interface Voice {
   id: string;
   label: string;
+  lang?: string; // giọng catalog (CapCut) có ngôn ngữ; giọng lấy từ API thì không
 }
 
 export function TtsSection({
@@ -210,7 +211,8 @@ export function TtsSection({
                 <SelectItem value={VOICE_DEFAULT}>Giọng mặc định</SelectItem>
                 {voices.map((v) => (
                   <SelectItem key={v.id} value={v.id}>
-                    {v.label}
+                    {/* Settings là toàn cục, job mới chọn ngôn ngữ → không lọc, chỉ gắn nhãn. */}
+                    {v.lang ? `[${v.lang.toUpperCase()}] ${v.label}` : v.label}
                   </SelectItem>
                 ))}
               </SelectContent>

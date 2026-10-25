@@ -106,6 +106,7 @@ async function main() {
     images: bundle.images,
     ...(bundle.audio ? { bundledAudio: bundle.audio } : {}),
     ...(bgm ? { bgm } : {}),
+    ...(scriptManifest.outputLanguage ? { outputLanguage: scriptManifest.outputLanguage } : {}),
   };
 
   // Map RenderEvent → log [render] tương đương bản cũ (test:render grep 'cache HIT'/'BGM duck'/'burn-in').

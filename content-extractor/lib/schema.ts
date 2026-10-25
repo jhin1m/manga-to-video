@@ -1,5 +1,6 @@
 // Hợp đồng dữ liệu dùng chung cho toàn app (và các consumer tương lai: CLI/TTS/video).
 // KHÔNG import kiểu Node (Buffer…) vào file này — kiểu nội bộ có Buffer nằm ở lib/jobs.ts.
+import type { OutputLanguage } from './output-language';
 
 export interface SceneContent {
   description: string;
@@ -33,6 +34,7 @@ export interface JobStatusDTO {
   items: ItemDTO[];
   // Ngữ cảnh chương (nhân vật/xưng hô/bối cảnh) — tiêm vào mọi call vision + prompt biên kịch.
   context: string;
+  outputLanguage: OutputLanguage;
 }
 
 // Tiến trình ingest phát dần qua NDJSON stream POST /api/jobs (pha-2 upload). Kiểu dùng CHUNG
@@ -135,7 +137,8 @@ export interface StoryboardDTO {
   beats: BeatDTO[];
 }
 
-// TTS tiếng Việt đọc ~15 ký tự/giây — đủ cho durationHint v1, Stage 2 tinh chỉnh sau.
+// TTS đọc ~15 ký tự/giây — đúng cho cả vi/en/id (đo giọng CapCut en/id: 14-17 ký tự/giây);
+// đủ cho durationHint v1, Stage 2 tinh chỉnh sau.
 export function estimateSeconds(narration: string): number {
   const chars = narration.trim().length;
   return chars === 0 ? 0 : Math.max(1, Math.ceil(chars / 15));
@@ -212,6 +215,9 @@ export interface ScriptManifest {
   createdAt: string;
   segmentCount: number;
   segments: ScriptSegment[];
+  // Ngôn ngữ của lời kể — CLI render đọc để chọn giọng TTS đúng ngôn ngữ. Chỉ ghi khi khác
+  // 'vi' (vắng mặt = 'vi'): bundle vi giữ nguyên shape cũ, không cần bump SCRIPT_VERSION.
+  outputLanguage?: OutputLanguage;
 }
 
 export const SCRIPT_VERSION = 1;
@@ -220,11 +226,13 @@ export function toScriptManifest(s: {
   jobId: string;
   createdAt: string;
   segments: ScriptSegment[];
+  outputLanguage?: OutputLanguage;
 }): ScriptManifest {
   return {
     version: SCRIPT_VERSION,
     jobId: s.jobId,
     createdAt: s.createdAt,
+    ...(s.outputLanguage && s.outputLanguage !== 'vi' ? { outputLanguage: s.outputLanguage } : {}),
     segmentCount: s.segments.length,
     segments: [...s.segments]
       .sort((a, b) => a.order - b.order)
@@ -381,6 +389,8 @@ export interface ProjectFile {
   audio?: Record<string, ProjectAudioMeta>; // segId → meta
   // Ngữ cảnh chương người dùng nhập — optional để .mtvproj cũ mở được không cần migration.
   context?: string;
+  // Ngôn ngữ đầu ra — optional cùng lý do; vắng mặt = 'vi'. Chỉ ghi khi khác 'vi'.
+  outputLanguage?: OutputLanguage;
 }
 
 // Nhận shape cấu trúc tối thiểu (Job nội bộ thỏa mãn về mặt structural typing)
