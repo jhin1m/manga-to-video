@@ -30,7 +30,7 @@ import { SubtitlePanel } from '@/components/video/subtitle-panel';
 import { useProject } from '@/components/project-context';
 import { useReducedMotion } from '@/components/use-reduced-motion';
 import { readNdjsonBody } from '@/lib/ndjson-client';
-import type { RenderConfig, ScriptDTO, StoryboardDTO } from '@/lib/schema';
+import type { JobStatusDTO, RenderConfig, ScriptDTO, StoryboardDTO } from '@/lib/schema';
 import { defaultRenderConfig } from '@/lib/schema';
 import { planKenburns } from '@/lib/kenburns';
 import { ASPECT_CSS, kenburnsFrameStyle } from '@/lib/kenburns-css';
@@ -42,7 +42,12 @@ import {
   TIMELINE_DEFAULTS,
 } from '@/lib/timeline';
 import { toPreviewCss } from '@/lib/subtitle-style';
-import { TTS_PROVIDER_OPTIONS } from '@/lib/tts-providers/catalog';
+import {
+  getOutputLanguage,
+  normalizeOutputLanguage,
+  type OutputLanguage,
+} from '@/lib/output-language';
+import { TTS_PROVIDER_OPTIONS, voicesForLang } from '@/lib/tts-providers/catalog';
 
 // Dòng NDJSON từ route render — khai type ở client (không import runtime Node của lib/render.ts
 // vào bundle trình duyệt). Progress phase + dòng done (kèm URL results.zip) + dòng error.
@@ -95,6 +100,9 @@ export default function VideoPreviewPage() {
   const [storyboard, setStoryboard] = useState<StoryboardDTO | null>(null);
   const [script, setScript] = useState<ScriptDTO | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Ngôn ngữ lời kể của job → lọc giọng CapCut. Server tự đổi giọng sai ngôn ngữ khi synth;
+  // UI lọc để người dùng thấy đúng giọng sẽ được dùng.
+  const [jobLang, setJobLang] = useState<OutputLanguage>('vi');
   const [config, setConfig] = useState<RenderConfig>(defaultRenderConfig);
   const [durations, setDurations] = useState<Record<string, number>>({});
   const [audioUrls, setAudioUrls] = useState<Record<string, string>>({});
@@ -128,6 +136,12 @@ export default function VideoPreviewPage() {
         if (cancelled) return;
         setStoryboard(sb);
         setScript(sc);
+        // Lấy riêng, KHÔNG chặn trang: lỗi chỉ làm dropdown giọng không lọc ('vi' như cũ).
+        fetchJSON<JobStatusDTO>(`/api/jobs/${jobId}`)
+          .then((job) => {
+            if (!cancelled) setJobLang(normalizeOutputLanguage(job.outputLanguage));
+          })
+          .catch(() => {});
         // Stepper: vào thẳng trang này (vd sau khi Mở project) vẫn biết các bước trước đã xong.
         publish({
           jobId: sb.jobId,
@@ -452,9 +466,14 @@ export default function VideoPreviewPage() {
     caption = caps.find((c) => timeSec >= c.start && timeSec < c.end)?.text ?? null;
   }
   const sub = config.subtitles;
-  // Provider có catalog giọng (CapCut) → render dropdown giọng + ẩn model; provider khác/rỗng
-  // → 2 ô text voiceId/model như cũ.
-  const capcutVoices = TTS_PROVIDER_OPTIONS.find((p) => p.id === config.tts.provider)?.voices;
+  // Provider có catalog giọng (CapCut) → render dropdown giọng (chỉ giọng đúng ngôn ngữ job) +
+  // ẩn model; provider khác/rỗng → 2 ô text voiceId/model như cũ.
+  const capcutVoices = voicesForLang(config.tts.provider, jobLang);
+  const langLabel = getOutputLanguage(jobLang).label;
+  // Giọng đã lưu trong config nhưng không đọc được ngôn ngữ job (vd project cũ chọn giọng Việt
+  // rồi job là en) — server (pickVoiceForLang) thay bằng giọng ĐẦU của ngôn ngữ đó, UI báo trước.
+  const voiceMismatch =
+    !!capcutVoices && !!config.tts.voiceId && !capcutVoices.some((v) => v.id === config.tts.voiceId);
 
   const set = <K extends keyof RenderConfig>(key: K, value: RenderConfig[K]) =>
     setConfig((c) => ({ ...c, [key]: value }));
@@ -735,28 +754,45 @@ export default function VideoPreviewPage() {
                   </SelectContent>
                 </Select>
               </label>
-              {capcutVoices ? (
-                <label className="flex items-center justify-between gap-2">
-                  Giọng
-                  <Select
-                    value={config.tts.voiceId || TTS_PROVIDER_ENV}
-                    onValueChange={(v) =>
-                      set('tts', { ...config.tts, voiceId: v === TTS_PROVIDER_ENV ? '' : v })
-                    }
-                  >
-                    <SelectTrigger size="sm" className="w-40 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={TTS_PROVIDER_ENV}>Giọng mặc định</SelectItem>
-                      {capcutVoices.map((v) => (
-                        <SelectItem key={v.id} value={v.id}>
-                          {v.label}
+              <p>
+                Ngôn ngữ lời kể: <span className="font-medium text-foreground">{langLabel}</span>
+                {' '}(chọn lúc nhận chapter)
+              </p>
+              {capcutVoices && capcutVoices.length === 0 ? (
+                <p className="text-destructive">
+                  CapCut chưa có giọng {langLabel} — chọn ElevenLabs để synth.
+                </p>
+              ) : capcutVoices ? (
+                <>
+                  {voiceMismatch && (
+                    <p className="text-amber-600 dark:text-amber-400">
+                      Giọng đã chọn không đọc được {langLabel} — synth sẽ dùng {capcutVoices[0]?.label}.
+                    </p>
+                  )}
+                  <label className="flex items-center justify-between gap-2">
+                    Giọng
+                    <Select
+                      value={(!voiceMismatch && config.tts.voiceId) || TTS_PROVIDER_ENV}
+                      onValueChange={(v) =>
+                        set('tts', { ...config.tts, voiceId: v === TTS_PROVIDER_ENV ? '' : v })
+                      }
+                    >
+                      <SelectTrigger size="sm" className="w-40 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={TTS_PROVIDER_ENV}>
+                          {jobLang === 'vi' ? 'Giọng mặc định' : `Giọng mặc định (${langLabel})`}
                         </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </label>
+                        {capcutVoices.map((v) => (
+                          <SelectItem key={v.id} value={v.id}>
+                            {v.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </label>
+                </>
               ) : (
                 <>
                   <label className="flex items-center justify-between gap-2">

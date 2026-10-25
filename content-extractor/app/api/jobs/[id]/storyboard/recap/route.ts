@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { getJob } from '@/lib/jobs';
 import { generateRecap, readScriptConfig } from '@/lib/script';
 import { getStoryboard } from '@/lib/storyboard-store';
 
@@ -24,7 +25,8 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     return NextResponse.json({ error: message }, { status: 400 });
   }
   try {
-    const recap = await generateRecap(state.script);
+    // Recap cùng ngôn ngữ với kịch bản của job (job vắng — vd sau restart — thì 'vi' như cũ).
+    const recap = await generateRecap(state.script, getJob(id)?.outputLanguage);
     return NextResponse.json({ recap });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Xuất recap thất bại';

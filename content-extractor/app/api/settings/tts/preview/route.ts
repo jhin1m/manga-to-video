@@ -1,7 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import { NextResponse } from 'next/server';
 import { isCrossSiteRequest } from '@/lib/settings';
+import { getOutputLanguage } from '@/lib/output-language';
 import { TTS_PREVIEW_SAMPLE, readTtsConfig, synthSegment } from '@/lib/tts';
+import { catalogVoices } from '@/lib/tts-providers/catalog';
 
 export const runtime = 'nodejs';
 
@@ -39,8 +41,12 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   }
+  // Câu mẫu theo ngôn ngữ của giọng (catalog) — giọng en đọc câu Việt nghe vô nghĩa. Giọng
+  // không rõ ngôn ngữ (ElevenLabs, ENV tự đặt) dùng câu vi cũ → cache nghe thử cũ còn HIT.
+  const voiceLang = catalogVoices(cfg.provider ?? '')?.find((v) => v.id === cfg.voiceId)?.lang;
+  const sample = voiceLang ? getOutputLanguage(voiceLang).previewSample : TTS_PREVIEW_SAMPLE;
   try {
-    const { mp3Path } = await synthSegment(TTS_PREVIEW_SAMPLE, {
+    const { mp3Path } = await synthSegment(sample, {
       ...cfg,
       // Key vừa gõ (chưa Lưu) thắng; chuỗi mask không phải key nên bỏ qua.
       ...(draftKey && !draftKey.startsWith('•') ? { apiKey: draftKey } : {}),

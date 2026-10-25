@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { getJob } from './jobs';
 import type { RenderConfig } from './schema';
 import { defaultRenderConfig, toScriptManifest } from './schema';
 import { migrateSubtitleStyle } from './subtitle-style';
@@ -19,6 +20,8 @@ export function buildBundle(id: string, config: RenderConfig, bgm?: { filename: 
     jobId: state.jobId,
     createdAt: state.createdAt,
     segments: state.script,
+    // Ngôn ngữ đi theo kịch bản vào bundle → CLI render chọn đúng giọng TTS (readTtsConfig).
+    outputLanguage: getJob(id)?.outputLanguage,
   });
 
   // Ảnh band: mọi sourceIndex mà shots tham chiếu.

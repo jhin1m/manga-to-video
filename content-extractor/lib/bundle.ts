@@ -1,4 +1,5 @@
 import AdmZip from 'adm-zip';
+import { isOutputLanguage } from './output-language';
 import type { RenderConfig, ScriptManifest } from './schema';
 import { RENDER_CONFIG_VERSION, SCRIPT_VERSION } from './schema';
 import { migrateSubtitleStyle } from './subtitle-style';
@@ -84,6 +85,11 @@ export function readBundle(zipBuffer: Buffer): BundleData {
   if (config.version < RENDER_CONFIG_VERSION) {
     config.subtitles = migrateSubtitleStyle(config.subtitles);
     config.version = RENDER_CONFIG_VERSION;
+  }
+  // Bundle chia sẻ được giữa máy — ngôn ngữ lạ là bundle hỏng, không đoán thành 'vi' (sẽ đọc
+  // lời kể tiếng khác bằng giọng Việt).
+  if (scriptManifest.outputLanguage !== undefined && !isOutputLanguage(scriptManifest.outputLanguage)) {
+    throw new Error(`Bundle: outputLanguage không hợp lệ (${String(scriptManifest.outputLanguage)})`);
   }
   assertSafeName(scriptManifest.jobId, 'jobId');
   for (const seg of scriptManifest.segments) {

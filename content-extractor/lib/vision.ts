@@ -6,6 +6,7 @@ import type {
   ChatCompletionCreateParamsStreaming,
   ChatCompletionMessageParam,
 } from 'openai/resources/chat/completions';
+import { getOutputLanguage, localizePrompt, type OutputLanguage } from './output-language';
 import type { SceneContent } from './schema';
 import {
   MAX_TOKENS_ENV,
@@ -80,13 +81,37 @@ Quy tắc — MỌI giá trị bằng TIẾNG VIỆT (kể cả dialogue: PHẢI
 - "dialogue": lời thoại trong các khung/bong bóng thoại, DỊCH sang tiếng Việt (ngôn ngữ gốc có thể là Nhật/Hàn/Anh/Trung), xếp theo đúng thứ tự đọc. Để mảng rỗng [] nếu trang không có thoại.
 - "note": để chuỗi rỗng "" trừ khi thật sự có điều đáng lưu ý: hiệu ứng âm thanh/từ tượng thanh nổi bật, chuyển cảnh, chi tiết nền quan trọng cho mạch truyện, hoặc cảnh báo ảnh mờ/chữ khó đọc (độ tin cậy thấp).`;
 
+// Prompt cho ngôn ngữ đầu ra ≠ vi. Giữ vế ÉP DỊCH thoại: thiếu nó glm-4.5v chép nguyên văn
+// thoại gốc phần lớn số lượt. Thoại gốc đã đúng ngôn ngữ đích (vd manga tiếng Anh → en) thì
+// giữ nguyên, nếu không "PHẢI dịch" tự mâu thuẫn. Chỉ dẫn vẫn bằng tiếng Việt nên phải cấm
+// rõ việc viết đầu ra bằng tiếng Việt.
+function promptFor(lang: OutputLanguage): string {
+  if (lang === 'vi') return PROMPT;
+  const name = getOutputLanguage(lang).promptName;
+  return localizePrompt(PROMPT, [
+    [
+      'MỌI giá trị bằng TIẾNG VIỆT (kể cả dialogue: PHẢI dịch, KHÔNG chép nguyên văn tiếng Anh/Hàn/Nhật):',
+      `MỌI giá trị bằng ${name.toUpperCase()} (kể cả dialogue: PHẢI dịch, KHÔNG chép nguyên văn ngôn ngữ gốc; TUYỆT ĐỐI không viết tiếng Việt):`,
+    ],
+    [
+      'hoặc "chàng trai/cô gái/người đàn ông…")',
+      `hoặc cách gọi chung bằng ${name} tương đương "chàng trai/cô gái/người đàn ông…")`,
+    ],
+    [
+      'DỊCH sang tiếng Việt (ngôn ngữ gốc có thể là Nhật/Hàn/Anh/Trung)',
+      `DỊCH sang ${name} (ngôn ngữ gốc có thể là Nhật/Hàn/Anh/Trung; thoại gốc đã là ${name} thì giữ nguyên)`,
+    ],
+  ]);
+}
+
 // Ghép ngữ cảnh chương (nhân vật/xưng hô/bối cảnh, người dùng nhập) vào prompt vision.
 // Guardrail bắt buộc: ngữ cảnh chỉ để gọi tên + chọn xưng hô khi dịch thoại — nếu không
 // chặn, model "nhìn thấy" cả nhân vật không có trong ảnh (context bleed). Rỗng = prompt y cũ.
-export function buildVisionPrompt(context?: string): string {
+export function buildVisionPrompt(context?: string, lang: OutputLanguage = 'vi'): string {
+  const base = promptFor(lang);
   const trimmed = context?.trim();
-  if (!trimmed) return PROMPT;
-  return `${PROMPT}
+  if (!trimmed) return base;
+  return `${base}
 
 Ngữ cảnh chương (người dùng cung cấp — CHỈ dùng để gọi đúng tên nhân vật và chọn đúng đại từ xưng hô khi dịch thoại; KHÔNG mô tả nhân vật/sự kiện không xuất hiện trong ảnh, KHÔNG chép ngữ cảnh này vào description):
 ${trimmed}`;
@@ -483,6 +508,7 @@ export async function describeImage(
   buffer: Buffer,
   filename?: string,
   context?: string,
+  lang?: OutputLanguage,
 ): Promise<SceneContent> {
   const config = readVisionConfig();
   const client = new OpenAI({
@@ -496,7 +522,7 @@ export async function describeImage(
     {
       role: 'user',
       content: [
-        { type: 'text', text: buildVisionPrompt(context) },
+        { type: 'text', text: buildVisionPrompt(context, lang) },
         { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b64}` } },
       ],
     },

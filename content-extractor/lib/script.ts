@@ -3,6 +3,7 @@ import pLimit from 'p-limit';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import type { BeatRegion, MotionOverride, SceneContent, ScriptSegment } from './schema';
 import { estimateSeconds } from './schema';
+import { getOutputLanguage, localizePrompt, type OutputLanguage } from './output-language';
 import { createPacer } from './pipeline';
 import {
   completeJson,
@@ -103,8 +104,36 @@ Trả về DUY NHẤT một JSON thô (không markdown, không lời dẫn) đú
 {"segments":[{"narration": string, "shotIndices": [int, ...]}]}
 — shotIndices là các index khung mà đoạn kể phủ, xếp theo thứ tự đọc.`;
 
+// Header biên kịch cho ngôn ngữ đầu ra ≠ vi. Ví dụ đại từ trong bản vi (hắn/nàng, tôi/ta,
+// huynh/muội) là đặc thù tiếng Việt — bản khác chỉ giữ QUY TẮC ngôi kể, bỏ ví dụ. Mô tả khung
+// có thể còn tiếng Việt (vision chạy trước khi đổi ngôn ngữ) → nhấn mạnh lời kể vẫn bằng đích.
+function headerFor(lang: OutputLanguage): string {
+  if (lang === 'vi') return PROMPT_HEADER;
+  const name = getOutputLanguage(lang).promptName;
+  return localizePrompt(PROMPT_HEADER, [
+    [
+      'đại từ ngôi ba phù hợp (hắn, y, cô, nàng, cô ta, ông ta…).',
+      `đại từ ngôi ba phù hợp của ${name}.`,
+    ],
+    [
+      'cấm dùng "tôi/ta/mình" làm chủ ngữ',
+      `cấm dùng đại từ ngôi thứ nhất của ${name} làm chủ ngữ`,
+    ],
+    ['lời kể gián tiếp ("hắn thầm nghĩ…")', `lời kể gián tiếp (kiểu "hắn thầm nghĩ…" nhưng bằng ${name})`],
+    ['Xưng hô ngôi nhất/ngôi hai (ta, ngươi, huynh, muội…)', 'Xưng hô ngôi nhất/ngôi hai'],
+    [
+      '- Viết lời kể tiếng Việt MẠCH LẠC,',
+      `- Viết lời kể bằng ${name} (mô tả khung bên dưới có thể bằng ngôn ngữ khác — lời kể vẫn PHẢI bằng ${name}, TUYỆT ĐỐI không viết tiếng Việt) MẠCH LẠC,`,
+    ],
+  ]);
+}
+
 // Export cho verify-script: khối context phải vào prompt, rỗng = prompt y cũ.
-export function buildPrompt(inputs: ScriptBeatInput[], context?: string): string {
+export function buildPrompt(
+  inputs: ScriptBeatInput[],
+  context?: string,
+  lang: OutputLanguage = 'vi',
+): string {
   const lines = inputs.map((inp, index) => {
     const desc = inp.content?.description?.trim() || '(không có mô tả)';
     const dialogue = inp.content?.dialogue?.length
@@ -127,7 +156,7 @@ export function buildPrompt(inputs: ScriptBeatInput[], context?: string): string
 - KHÔNG bịa thêm sự kiện ngoài nội dung các khung.
 ${trimmed}`
     : '';
-  return `${PROMPT_HEADER}${contextBlock}\n\nNội dung các khung:\n${lines.join('\n')}`;
+  return `${headerFor(lang)}${contextBlock}\n\nNội dung các khung:\n${lines.join('\n')}`;
 }
 
 // Vision fallback (Validation S1): band content null → crop cả band → describeImage.
@@ -140,6 +169,7 @@ export async function resolveMissingContent(
     concurrency?: number;
     minIntervalMs?: number;
     context?: string;
+    lang?: OutputLanguage;
     onProgress?: (done: number, total: number) => void;
   },
 ): Promise<ScriptBeatInput[]> {
@@ -167,7 +197,7 @@ export async function resolveMissingContent(
             });
             resolved.set(
               inp.beatId,
-              await describeImage(cropped, `script-band#${inp.order}`, opts?.context),
+              await describeImage(cropped, `script-band#${inp.order}`, opts?.context, opts?.lang),
             );
           } catch (err) {
             console.error(`[script] vision fallback band#${inp.order} lỗi:`, err);
@@ -269,6 +299,7 @@ export async function generateScript(
   inputs: ScriptBeatInput[],
   context?: string,
   hooks?: { onChars?: (chars: number) => void; onAttempt?: (attempt: number) => void },
+  lang: OutputLanguage = 'vi',
 ): Promise<ScriptSegment[]> {
   if (inputs.length === 0) return [];
   const config = readScriptConfig();
@@ -278,7 +309,7 @@ export async function generateScript(
     maxRetries: 0, // tự quản lý retry bằng withRetry
   });
   const messages: ChatCompletionMessageParam[] = [
-    { role: 'user', content: buildPrompt(inputs, context) },
+    { role: 'user', content: buildPrompt(inputs, context, lang) },
   ];
   const label = `script ${inputs.length} band`;
   let rawSegments: RawSegment[];
@@ -326,13 +357,15 @@ export async function generateScript(
 // <series>/.mtv/summaries/. Format phải khớp hợp đồng của skill manga-to-video
 // (references/series.md): ≤250 từ, ngôi ba, thuật nhân quả, chốt bằng dòng "Kết chương: ...".
 
-export function buildRecapPrompt(segments: ScriptSegment[]): string {
+export function buildRecapPrompt(segments: ScriptSegment[], lang: OutputLanguage = 'vi'): string {
   const story = [...segments]
     .sort((a, b) => a.order - b.order)
     .map((s) => s.narration.trim())
     .filter(Boolean)
     .join('\n');
-  return `Bạn là người tóm tắt cho video recap truyện tranh. Dưới đây là toàn bộ lời kể (voice-over) của MỘT chương, theo thứ tự.
+  // Thay thế ngôn ngữ chỉ áp lên phần CHỈ DẪN — lời kể của người dùng ghép vào sau, không
+  // bao giờ bị localizePrompt sửa nhầm.
+  const instructions = `Bạn là người tóm tắt cho video recap truyện tranh. Dưới đây là toàn bộ lời kể (voice-over) của MỘT chương, theo thứ tự.
 
 Nhiệm vụ: viết recap diễn biến chương này để làm ngữ cảnh cho chương sau.
 - Tối đa 250 từ, tiếng Việt, lời kể ngôi thứ ba, gọi nhân vật đúng tên như trong lời kể.
@@ -342,11 +375,26 @@ Nhiệm vụ: viết recap diễn biến chương này để làm ngữ cảnh c
 Trả về DUY NHẤT phần recap dạng văn bản thuần (không markdown fence, không lời dẫn).
 
 Lời kể của chương:
-${story}`;
+`;
+  if (lang === 'vi') return `${instructions}${story}`;
+  // Nhãn "Kết chương: " giữ NGUYÊN chữ Việt ở mọi ngôn ngữ — là định dạng máy đọc của
+  // series-memory (skill manga-to-video references/series.md), không phải văn bản hiển thị.
+  const name = getOutputLanguage(lang).promptName;
+  const localized = localizePrompt(instructions, [
+    ['- Tối đa 250 từ, tiếng Việt,', `- Tối đa 250 từ, viết bằng ${name} (TUYỆT ĐỐI không viết tiếng Việt),`],
+    [
+      'bắt đầu bằng "Kết chương: " nêu tình huống đang treo.',
+      `bắt đầu bằng "Kết chương: " (giữ NGUYÊN nhãn này bằng tiếng Việt — là định dạng máy đọc), phần sau nhãn viết bằng ${name}, nêu tình huống đang treo.`,
+    ],
+  ]);
+  return `${localized}${story}`;
 }
 
 // Throw khi chưa có kịch bản/model hỏng — route trả lỗi rõ cho client.
-export async function generateRecap(segments: ScriptSegment[]): Promise<string> {
+export async function generateRecap(
+  segments: ScriptSegment[],
+  lang: OutputLanguage = 'vi',
+): Promise<string> {
   if (segments.length === 0) {
     throw new Error('Chưa có đoạn kịch bản nào để tóm tắt');
   }
@@ -357,7 +405,7 @@ export async function generateRecap(segments: ScriptSegment[]): Promise<string> 
     maxRetries: 0, // tự quản lý retry bằng withRetry
   });
   const messages: ChatCompletionMessageParam[] = [
-    { role: 'user', content: buildRecapPrompt(segments) },
+    { role: 'user', content: buildRecapPrompt(segments, lang) },
   ];
   // jsonMode=false — recap là văn bản thuần; ép json_object làm model trả JSON sai format.
   const res = await withRetry(() =>

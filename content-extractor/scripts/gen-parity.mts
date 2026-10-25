@@ -38,6 +38,9 @@ import {
   toAssForceStyle,
 } from '../lib/subtitle-style';
 import { TIMELINE_DEFAULTS, formatCaption } from '../lib/timeline';
+import { OUTPUT_LANGUAGES } from '../lib/output-language';
+import { CAPCUT_VOICES, pickVoiceForLang } from '../lib/tts-providers/catalog';
+import { buildVisionPrompt } from '../lib/vision';
 
 export const PARITY_VERSION = 1;
 
@@ -131,6 +134,16 @@ const CAPTION_CASES: Array<{ name: string; text: string; style: Pick<SubtitleSty
   { name: 'giu xuong dong san co', text: 'Dòng một\nDòng hai dài hơn một chút', style: { uppercase: false, maxCharsPerLine: 12 } },
 ];
 
+// --- Golden 4: prompt vision theo ngôn ngữ đầu ra ---------------------------
+// Skill Python gọi z.ai bằng CHÍNH prompt này — lệch một chữ là hai pipeline đọc truyện khác
+// nhau. So nguyên chuỗi, cả nhánh có ngữ cảnh chương (guardrail context bleed).
+const VISION_PROMPT_CONTEXTS = ['', 'Tô Nhược — nữ, sư tỷ.'];
+
+// --- Golden 5: chọn giọng theo ngôn ngữ ------------------------------------
+// tts.py port tay pickVoiceForLang — khoá LOGIC (không chỉ dữ liệu catalog) bằng ma trận
+// provider × giọng (rỗng / vi / en / id / ngoài catalog) × ngôn ngữ. null = không có giọng.
+const PICK_VOICES = ['', 'BV074_streaming', 'BV029_streaming', 'id_female_icha_uranus_bigtts', 'custom_env_voice'];
+
 export function buildParity() {
   return {
     version: PARITY_VERSION,
@@ -190,6 +203,27 @@ export function buildParity() {
         style: styleToSnake(c.style as unknown as Record<string, unknown>),
         expected: formatCaption(c.text, c.style),
       })),
+      vision_prompts: OUTPUT_LANGUAGES.flatMap((l) =>
+        VISION_PROMPT_CONTEXTS.map((context) => ({
+          lang: l.id,
+          context,
+          expected: buildVisionPrompt(context, l.id),
+        })),
+      ),
+    },
+    i18n_pick_voice: ['capcut', 'elevenlabs'].flatMap((provider) =>
+      PICK_VOICES.flatMap((voice) =>
+        OUTPUT_LANGUAGES.map((l) => ({
+          provider,
+          voice,
+          lang: l.id,
+          expected: pickVoiceForLang(provider, voice, l.id),
+        })),
+      ),
+    ),
+    i18n: {
+      output_languages: OUTPUT_LANGUAGES.map((l) => snakeKeys({ ...l })),
+      capcut_voices: CAPCUT_VOICES.map((v) => snakeKeys({ ...v })),
     },
   };
 }

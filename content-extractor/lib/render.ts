@@ -23,6 +23,7 @@ import {
   resolveSubtitleBin,
 } from './ffmpeg';
 import { kenburns } from './kenburns';
+import type { OutputLanguage } from './output-language';
 import type { RenderConfig, ScriptManifest } from './schema';
 import { buildTimeline, TIMELINE_DEFAULTS, toSrt, toTimelineJson } from './timeline';
 import { readTtsConfig, synthSegment } from './tts';
@@ -34,6 +35,7 @@ export interface RenderInput {
   images: Map<number, Buffer>; // sourceIndex → band bytes
   bundledAudio?: Map<string, Buffer>; // segId → mp3 đã synth (bundle hoặc store) → bỏ qua TTS
   bgm?: { filename: string; data: Buffer };
+  outputLanguage?: OutputLanguage; // ngôn ngữ lời kể → chọn giọng TTS; vắng = 'vi'
 }
 
 // Event tiến trình engine phát ra — KHÔNG gồm 'done': hoàn tất là việc của caller (CLI in
@@ -136,6 +138,9 @@ export async function renderVideo(input: RenderInput, opts: RenderOptions): Prom
           provider: config.tts.provider || undefined,
           voiceId: config.tts.voiceId || undefined,
           model: config.tts.model || undefined,
+          // Bundle vắng field = kịch bản 'vi' — vẫn áp để giọng catalog sai ngôn ngữ bị đổi, cùng
+          // quy tắc với route synth của trang video (không thì preview và render khác giọng).
+          lang: input.outputLanguage ?? 'vi',
         });
         const r = await synthSegment(narration, ttsCfg);
         segDurations[seg.id] = r.durationSec;

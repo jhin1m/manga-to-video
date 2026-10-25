@@ -1,5 +1,6 @@
 import AdmZip from 'adm-zip';
 import { assertSafeName, parseEntryJson } from './bundle';
+import { isOutputLanguage } from './output-language';
 import type {
   Manifest,
   ProjectFile,
@@ -73,6 +74,9 @@ export function readProject(zipBuffer: Buffer): ProjectData {
   }
   if (project.context !== undefined && typeof project.context !== 'string') {
     throw new Error('Project: context phải là chuỗi');
+  }
+  if (project.outputLanguage !== undefined && !isOutputLanguage(project.outputLanguage)) {
+    throw new Error(`Project: outputLanguage không hợp lệ (${String(project.outputLanguage)})`);
   }
   assertSafeName(project.jobId, 'Project: jobId');
 

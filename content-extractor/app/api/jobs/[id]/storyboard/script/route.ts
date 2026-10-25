@@ -97,8 +97,10 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   void (async () => {
     try {
       const context = job?.context;
+      const lang = job?.outputLanguage;
       const resolved = await resolveMissingContent(id, inputs, {
         context,
+        lang,
         onProgress: (done, total) => write({ type: 'progress', phase: 'resolving', done, total }),
       });
       // Chốt pha 'writing' TRƯỚC khi gọi model → thứ tự nhãn resolving→writing→splitting luôn
@@ -110,7 +112,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
         onAttempt: (attempt) => {
           if (attempt > 0) write({ type: 'progress', phase: 'writing', attempt: attempt + 1 });
         },
-      });
+      }, lang);
       if (segments.length === 0) {
         write({
           type: 'error',

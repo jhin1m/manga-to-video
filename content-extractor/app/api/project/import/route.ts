@@ -58,6 +58,7 @@ export async function POST(req: Request) {
       };
     }),
     project.context ?? '', // .mtvproj cũ không có field → job context rỗng như trước
+    project.outputLanguage ?? 'vi', // readProject đã validate; vắng mặt = 'vi' như trước
   );
   let processed = 0;
   for (const m of manifest.items) {
