@@ -80,7 +80,19 @@ export function parseConfig(raw: unknown): RenderConfig {
     subtitles: migrateSubtitleStyle(r.subtitles),
     bgm: { ...d.bgm, ...(r.bgm ?? {}) },
     tts: { ...d.tts, ...(r.tts ?? {}) },
-    kenburns: { ...d.kenburns, ...(r.kenburns ?? {}) },
+    kenburns: parseKenburns(r.kenburns, d.kenburns),
+  };
+}
+
+// Config cũ (trước khi có motion/fill) thiếu field → motion lấy default ('static'), fill để trống
+// = theo aspect. Giá trị lạ bị bỏ thay vì lọt xuống engine.
+function parseKenburns(raw: unknown, d: RenderConfig['kenburns']): RenderConfig['kenburns'] {
+  const k = (typeof raw === 'object' && raw !== null ? raw : {}) as Partial<RenderConfig['kenburns']>;
+  const zoom = Number(k.zoom);
+  return {
+    zoom: Number.isFinite(zoom) ? zoom : d.zoom,
+    motion: k.motion === 'auto' || k.motion === 'static' ? k.motion : d.motion,
+    ...(k.fill === 'cover' || k.fill === 'blur' ? { fill: k.fill } : {}),
   };
 }
 

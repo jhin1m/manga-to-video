@@ -294,6 +294,12 @@ export interface SubtitleStyle {
   maxCharsPerLine: number; // 0 = không ngắt dòng thủ công
 }
 
+// Cách lấp khung khi region lệch tỉ lệ: 'blur' = ảnh fit-inside trên nền blur · 'cover' = phóng
+// lấp kín khung, cắt phần thừa ở hai mép.
+export type FillMode = 'blur' | 'cover';
+// Hiệu ứng mặc định cho shot KHÔNG có ghi đè: 'static' = đứng yên · 'auto' = pan/zoom tự suy.
+export type DefaultMotion = 'static' | 'auto';
+
 export interface RenderConfig {
   version: number;
   aspect: Aspect;
@@ -303,7 +309,9 @@ export interface RenderConfig {
   bgm: { path: string | null; volume: number; duckDb: number };
   // provider: rỗng = lấy ENV TTS_PROVIDER lúc synth (mặc định elevenlabs); 'elevenlabs' | 'capcut'.
   tts: { provider: string; voiceId: string; model: string };
-  kenburns: { zoom: number }; // hệ số zoom đích cho shot gần vuông (1 = tĩnh)
+  // zoom: hệ số zoom đích cho shot gần vuông (1 = tĩnh). motion: hiệu ứng cho shot không có
+  // ghi đè per-beat. fill: undefined = theo aspect (defaultFill trong lib/kenburns.ts).
+  kenburns: { zoom: number; motion: DefaultMotion; fill?: FillMode };
   segmentOverrides?: Record<string, { durationSec?: number }>;
 }
 
@@ -342,7 +350,7 @@ export function defaultRenderConfig(): RenderConfig {
     },
     bgm: { path: null, volume: 0.3, duckDb: -12 },
     tts: { provider: '', voiceId: '', model: '' }, // rỗng = lấy từ ENV (TTS_PROVIDER + ELEVENLABS_*) lúc synth
-    kenburns: { zoom: 1.12 },
+    kenburns: { zoom: 1.12, motion: 'static' },
   };
 }
 

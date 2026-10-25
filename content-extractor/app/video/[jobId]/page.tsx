@@ -30,9 +30,16 @@ import { SubtitlePanel } from '@/components/video/subtitle-panel';
 import { useProject } from '@/components/project-context';
 import { useReducedMotion } from '@/components/use-reduced-motion';
 import { readNdjsonBody } from '@/lib/ndjson-client';
-import type { JobStatusDTO, RenderConfig, ScriptDTO, StoryboardDTO } from '@/lib/schema';
+import type {
+  DefaultMotion,
+  FillMode,
+  JobStatusDTO,
+  RenderConfig,
+  ScriptDTO,
+  StoryboardDTO,
+} from '@/lib/schema';
 import { defaultRenderConfig } from '@/lib/schema';
-import { planKenburns } from '@/lib/kenburns';
+import { defaultFill, planKenburns, resolveShotMotion } from '@/lib/kenburns';
 import { ASPECT_CSS, kenburnsFrameStyle } from '@/lib/kenburns-css';
 import {
   allocateCaptions,
@@ -423,6 +430,8 @@ export default function VideoPreviewPage() {
   }
 
   // ==== Khung hình + Ken Burns CSS (xấp xỉ) ====
+  // Chưa chọn cách lấp khung → theo aspect (9:16 lấp kín, khung khác nền blur), khớp lib/render.ts.
+  const fillMode = config.kenburns.fill ?? defaultFill(config.aspect);
   const working = currentShot
     ? storyboard.working.find((w) => w.sourceIndex === currentShot.sourceIndex)
     : undefined;
@@ -437,11 +446,12 @@ export default function VideoPreviewPage() {
       imgW: working.width,
       imgH: working.height,
       region: currentShot.region,
-      motion: currentShot.motion,
+      motion: resolveShotMotion(currentShot.motion, config.kenburns.motion),
       aspect: config.aspect,
       durationSec: shotDur,
       fps: config.fps,
       zoom: config.kenburns.zoom,
+      fill: fillMode,
     });
     ({ fgStyle, imgTransformStyle } = kenburnsFrameStyle(plan, p, config.kenburns.zoom));
   }
@@ -670,13 +680,48 @@ export default function VideoPreviewPage() {
                 </label>
               </div>
               <label className="mt-3 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                Lấp khung
+                <Select
+                  value={fillMode}
+                  onValueChange={(v) => set('kenburns', { ...config.kenburns, fill: v as FillMode })}
+                >
+                  <SelectTrigger size="sm" className="w-40 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cover">Full màn hình</SelectItem>
+                    <SelectItem value="blur">Vừa khung + nền blur</SelectItem>
+                  </SelectContent>
+                </Select>
+              </label>
+              <label className="mt-3 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                Hiệu ứng
+                <Select
+                  value={config.kenburns.motion}
+                  onValueChange={(v) =>
+                    set('kenburns', { ...config.kenburns, motion: v as DefaultMotion })
+                  }
+                >
+                  <SelectTrigger size="sm" className="w-40 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="static">Tĩnh</SelectItem>
+                    <SelectItem value="auto">Tự động (lia/zoom)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </label>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Beat đã chọn hiệu ứng riêng ở Storyboard giữ nguyên lựa chọn đó.
+              </p>
+              <label className="mt-3 flex items-center justify-between gap-2 text-xs text-muted-foreground">
                 Zoom Ken Burns: {config.kenburns.zoom.toFixed(2)}×
                 <Slider
                   min={1}
                   max={1.4}
                   step={0.01}
                   value={[config.kenburns.zoom]}
-                  onValueChange={([v]) => set('kenburns', { zoom: v })}
+                  onValueChange={([v]) => set('kenburns', { ...config.kenburns, zoom: v })}
                   className="w-32"
                 />
               </label>

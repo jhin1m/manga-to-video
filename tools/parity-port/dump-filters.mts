@@ -19,6 +19,12 @@ const CASES: Array<[string, KenburnsInput]> = [
   // Slice manhwa thật trong khung ngang: trung vị + cực đoan của corpus 720px.
   ['tall median 16:9', { imgW: 720, imgH: 1418, region: null, aspect: '16:9', durationSec: 2.5, fps: 30, zoom: 1.12 }],
   ['tall extreme 16:9', { imgW: 720, imgH: 2240, region: null, aspect: '16:9', durationSec: 2.82, fps: 30, zoom: 1.12 }],
+  // fill 'cover' (full màn hình, không blur): static + zoom lệch tỉ lệ, static vừa khít, pan giữ nguyên.
+  ['static cover wide 9:16', { imgW: 720, imgH: 800, region: null, aspect: '9:16', durationSec: 2, fps: 30, zoom: 1.12, motion: { mode: 'static' }, fill: 'cover' }],
+  ['static cover tall 9:16', { imgW: 720, imgH: 1600, region: { x: 0, y: 100, w: 720, h: 1500 }, aspect: '9:16', durationSec: 2, fps: 30, zoom: 1.12, motion: { mode: 'static' }, fill: 'cover' }],
+  ['static cover exact 9:16', { imgW: 720, imgH: 1280, region: null, aspect: '9:16', durationSec: 2, fps: 30, zoom: 1.12, motion: { mode: 'static' }, fill: 'cover' }],
+  ['zoom cover nearsq 9:16', { imgW: 720, imgH: 800, region: null, aspect: '9:16', durationSec: 2.5, fps: 30, zoom: 1.12, fill: 'cover' }],
+  ['pan-v cover 9:16', { imgW: 720, imgH: 2100, region: null, aspect: '9:16', durationSec: 4.567, fps: 30, zoom: 1.12, fill: 'cover' }],
 ];
 
 for (const [label, input] of CASES) {
