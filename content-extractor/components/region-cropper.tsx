@@ -22,7 +22,7 @@ import {
   type MotionMode,
   type MotionOverride,
 } from '@/lib/schema';
-import { availableModes, planKenburns } from '@/lib/kenburns';
+import { availableModes, defaultFill, planKenburns } from '@/lib/kenburns';
 import { ASPECT_CSS, kenburnsFrameStyle, kenburnsModeLabel } from '@/lib/kenburns-css';
 import { AUTO_REGION_DEFAULTS, autoRegion } from '@/lib/auto-region';
 import { INK_BBOX_DEFAULTS, inkBBox } from '@/lib/ink-bbox';
@@ -77,7 +77,7 @@ const PREVIEW_DEFAULTS = defaultRenderConfig();
 
 // Nhãn mode trong dropdown (không kèm mũi tên hướng — hướng do nút đảo quyết định).
 const MODE_OPTIONS: Array<{ mode: MotionMode; label: string }> = [
-  { mode: 'auto', label: 'Auto' },
+  { mode: 'auto', label: 'Theo trang Video' },
   { mode: 'pan-v', label: 'Lia dọc' },
   { mode: 'pan-h', label: 'Lia ngang' },
   { mode: 'zoom', label: 'Zoom' },
@@ -170,6 +170,7 @@ function ShotPreview({
     fps: PREVIEW_FPS,
     zoom: PREVIEW_DEFAULTS.kenburns.zoom,
     motion,
+    fill: defaultFill(aspect),
   });
   const { fgStyle, imgTransformStyle } = kenburnsFrameStyle(
     plan,
@@ -179,8 +180,10 @@ function ShotPreview({
 
   const isAuto = motion === undefined || motion.mode === 'auto';
   const modes = availableModes(region, width, height, aspect);
+  // Beat không ghi đè nhận "Hiệu ứng" chọn ở trang Video (mặc định Tĩnh). Storyboard không
+  // biết lựa chọn đó nên preview chiếu hiệu ứng mà chế độ Tự động sẽ dùng.
   const chipLabel = isAuto
-    ? `Auto · ${kenburnsModeLabel(plan.mode)}`
+    ? `Theo Video · tự động: ${kenburnsModeLabel(plan.mode)}`
     : kenburnsModeLabel(plan.mode, plan.reverse === true);
   // Nút đảo hướng: chỉ khi mode hiện hành có hướng. Bấm khi đang auto = "đóng băng" mode
   // suy ra thành ghi đè tường minh kèm reverse (auto + reverse là no-op theo hợp đồng).

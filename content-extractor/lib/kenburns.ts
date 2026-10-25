@@ -1,9 +1,17 @@
-import type { Aspect, BeatRegion, MotionMode, MotionOverride } from './schema';
+import type {
+  Aspect,
+  BeatRegion,
+  DefaultMotion,
+  FillMode,
+  MotionMode,
+  MotionOverride,
+} from './schema';
 
 // Ken Burns per shot — module THUẦN trả chuỗi filtergraph ffmpeg (không spawn, dễ test).
 // Mặc định (auto) suy hướng chuyển động từ hình dáng region: cao/hẹp → pan dọc, rộng →
 // pan ngang, gần vuông → zoom vào tâm. `motion` ghi đè per-shot: ép mode + đảo hướng.
-// Aspect lệch band-ratio → blur-fill (nền scale-cover + boxblur, lớp trên fit-inside).
+// Aspect lệch band-ratio → blur-fill (nền scale-cover + boxblur, lớp trên fit-inside), hoặc
+// fill 'cover': phóng lấp kín khung rồi cắt mép giữa — full màn hình, không nền blur.
 //
 // Chống shake: crop lẫn zoompan đều lượng tử hoá toạ độ về integer pixel MỖI FRAME, mà
 // chuyển động Ken Burns < 1px/frame → thành "đứng yên vài frame rồi giật ~1px" (preview
@@ -22,6 +30,22 @@ export interface KenburnsInput {
   fps: number;
   zoom: number; // hệ số zoom đích cho mode zoom (1 = tĩnh)
   motion?: MotionOverride; // ghi đè per-shot — undefined hoặc mode 'auto' = tự suy như cũ
+  fill?: FillMode; // cách lấp khung khi region lệch tỉ lệ — undefined = 'blur' (hành vi cũ)
+}
+
+// 9:16 lấp kín (slice manhwa sau split_tall gần khung dọc nên chỉ mất ít mép); khung ngang/
+// vuông giữ blur vì cover một slice cao vào đó sẽ cắt mất phần lớn chiều cao.
+export function defaultFill(aspect: Aspect): FillMode {
+  return aspect === '9:16' ? 'cover' : 'blur';
+}
+
+// Ghi đè per-shot (pan/zoom/static) luôn thắng; shot auto mới nhận hiệu ứng mặc định.
+export function resolveShotMotion(
+  motion: MotionOverride | undefined,
+  defaultMotion: DefaultMotion,
+): MotionOverride | undefined {
+  if (motion !== undefined && motion.mode !== 'auto') return motion;
+  return defaultMotion === 'static' ? { mode: 'static' } : undefined;
 }
 
 export function frameSize(aspect: Aspect): { w: number; h: number } {
@@ -38,6 +62,9 @@ export function frameSize(aspect: Aspect): { w: number; h: number } {
 export interface KenburnsPlan {
   mode: 'pan-v' | 'pan-h' | 'zoom' | 'static';
   blurFill: boolean;
+  // Lấp kín khung bằng scale-cover + crop giữa (fill 'cover' và region lệch tỉ lệ). Chỉ set
+  // khi true để plan của fill 'blur' giữ nguyên hình dạng cũ.
+  coverFill?: boolean;
   // pan: quãng chạy (px trên trục pan, sau kẹp vận tốc) + offset khởi điểm căn giữa phần dư.
   travelPx?: number;
   basePx?: number;
@@ -133,6 +160,11 @@ export function planKenburns(input: KenburnsInput): KenburnsPlan {
   const coverH = wideness / frameRatio; // = scaledW / W
   // blur-fill khi tỉ lệ region lệch khung (fit-inside không phủ kín).
   const aspectMismatch = Math.abs(wideness - frameRatio) / frameRatio > 0.02;
+  const cover = input.fill === 'cover';
+  const fillPlan = {
+    blurFill: aspectMismatch && !cover,
+    ...(aspectMismatch && cover ? { coverFill: true } : {}),
+  };
 
   // ==== Ghi đè per-shot (mode ≠ auto) ====
   const forced = input.motion !== undefined && input.motion.mode !== 'auto' ? input.motion : undefined;
@@ -151,10 +183,10 @@ export function planKenburns(input: KenburnsInput): KenburnsPlan {
       return panHPlan(r, W, H, input.durationSec, reverse);
     }
     if (forced.mode === 'zoom') {
-      return { mode: 'zoom', blurFill: aspectMismatch, ...(reverse ? { reverse: true } : {}) };
+      return { mode: 'zoom', ...fillPlan, ...(reverse ? { reverse: true } : {}) };
     }
     if (forced.mode === 'static') {
-      return { mode: 'static', blurFill: aspectMismatch };
+      return { mode: 'static', ...fillPlan };
     }
     // Ép pan nhưng vùng không đủ phần dư trên trục đó (UI đã disable — chỉ tới đây khi
     // .mtvproj bị sửa tay hoặc dữ liệu lệch): rơi về suy luận auto phía dưới — an toàn,
@@ -169,8 +201,8 @@ export function planKenburns(input: KenburnsInput): KenburnsPlan {
   if (wideness >= STRIP_SHAPE && coverH >= PAN_MIN_COVER && coverH <= maxCover) {
     return panHPlan(r, W, H, input.durationSec);
   }
-  // zoom vào tâm region; blur-fill khi tỉ lệ region lệch khung.
-  return { mode: 'zoom', blurFill: aspectMismatch };
+  // zoom vào tâm region; blur-fill (hoặc cover) khi tỉ lệ region lệch khung.
+  return { mode: 'zoom', ...fillPlan };
 }
 
 // Mode khả thi cho vùng hiện tại — nguồn cho UI disable + tooltip. auto/zoom/static LUÔN
@@ -208,6 +240,11 @@ export function kenburns(input: KenburnsInput): string {
   // Pan chạy ở SUPERSAMPLE× theo trục pan (base/travel nhân theo, trục kia giữ nguyên)
   // rồi downscale về khung — bước crop từ 1px còn 1/SS px.
   const S = SUPERSAMPLE;
+  // Scale về khung w×h: cover phóng phủ kín rồi crop giữa, còn lại scale thẳng (lệch ≤2%).
+  const fitTo = (w: number, h: number) =>
+    plan.coverFill
+      ? `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h}`
+      : `scale=${w}:${h}`;
   if (plan.mode === 'pan-v') {
     const scaled = even((r.h * W) / r.w);
     const Sp = panSupersample(W, scaled);
@@ -232,9 +269,9 @@ export function kenburns(input: KenburnsInput): string {
     // static BỎ HẲN zoompan: zoompan tồn tại trong file này chỉ để animate z — không
     // animate thì đừng gọi nó (z=1 qua .toFixed vẫn có thể thành micro-zoom ngoài ý muốn).
     if (!plan.blurFill) {
-      // Scale thẳng về khung: lệch tỉ lệ ≤2% — đúng dung sai nhánh zoom đang chấp nhận
-      // (zoompan s=WxH cũng ép về đúng khung như vậy).
-      return `[0:v]${cropReg},scale=${W}:${H},setsar=1[v]`;
+      // Lệch tỉ lệ ≤2% thì scale thẳng — đúng dung sai nhánh zoom đang chấp nhận (zoompan
+      // s=WxH cũng ép về đúng khung như vậy); coverFill thì phủ kín + cắt mép.
+      return `[0:v]${cropReg},${fitTo(W, H)},setsar=1[v]`;
     }
     // blur-fill: nền scale-cover + boxblur; fg fit-inside TĨNH — không supersample
     // (không có gì đổi giữa các frame thì không có rounding drift để mà jitter).
@@ -263,7 +300,7 @@ export function kenburns(input: KenburnsInput): string {
 
   if (!plan.blurFill) {
     return (
-      `[0:v]${cropReg},scale=${W * S}:${H * S},` +
+      `[0:v]${cropReg},${fitTo(W * S, H * S)},` +
       `zoompan=z=${zExpr}:${zoomCenter}:d=1:s=${W}x${H},tmix=frames=2,setsar=1[v]`
     );
   }

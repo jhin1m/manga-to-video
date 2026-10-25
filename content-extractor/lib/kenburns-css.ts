@@ -59,16 +59,18 @@ export function kenburnsFrameStyle(
       },
     };
   }
+  // coverFill: ảnh phủ kín khung (che luôn lớp nền blur), khớp scale-cover + crop giữa của ffmpeg.
+  const objectFit = plan.coverFill ? 'cover' : 'contain';
   if (plan.mode === 'static') {
-    // Khung đứng yên — fit-inside như zoom nhưng không transform.
+    // Khung đứng yên — cùng cách lấp khung như zoom nhưng không transform.
     return {
-      fgStyle: { width: '100%', height: '100%', objectFit: 'contain' },
+      fgStyle: { width: '100%', height: '100%', objectFit },
       imgTransformStyle: {},
     };
   }
   const scale = 1 + (Math.max(1, zoom) - 1) * q;
   return {
-    fgStyle: { width: '100%', height: '100%', objectFit: 'contain' },
+    fgStyle: { width: '100%', height: '100%', objectFit },
     imgTransformStyle: { transform: `scale(${scale.toFixed(4)})` },
   };
 }

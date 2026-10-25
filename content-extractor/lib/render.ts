@@ -22,7 +22,7 @@ import {
   renderShot,
   resolveSubtitleBin,
 } from './ffmpeg';
-import { kenburns } from './kenburns';
+import { defaultFill, kenburns, resolveShotMotion } from './kenburns';
 import type { OutputLanguage } from './output-language';
 import type { RenderConfig, ScriptManifest } from './schema';
 import { buildTimeline, TIMELINE_DEFAULTS, toSrt, toTimelineJson } from './timeline';
@@ -196,11 +196,12 @@ export async function renderVideo(input: RenderInput, opts: RenderOptions): Prom
         imgW: dims.w,
         imgH: dims.h,
         region: shot.region,
-        motion: shot.motion,
+        motion: resolveShotMotion(shot.motion, config.kenburns.motion),
         aspect: config.aspect,
         durationSec,
         fps: config.fps,
         zoom: config.kenburns.zoom,
+        fill: config.kenburns.fill ?? defaultFill(config.aspect),
       });
       const outFile = path.join(shotsDir, `shot-${String(si).padStart(3, '0')}-${shotIdxInSeg}.mp4`);
       await renderShot({

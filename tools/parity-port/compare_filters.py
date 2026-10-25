@@ -26,6 +26,12 @@ CASES = [
     # Slice manhwa thật trong khung ngang: trung vị + cực đoan của corpus 720px.
     ("tall median 16:9", {"img_w": 720, "img_h": 1418, "region": None, "aspect": "16:9", "duration_sec": 2.5, "fps": 30, "zoom": 1.12}),
     ("tall extreme 16:9", {"img_w": 720, "img_h": 2240, "region": None, "aspect": "16:9", "duration_sec": 2.82, "fps": 30, "zoom": 1.12}),
+    # fill 'cover' (full màn hình, không blur): static + zoom lệch tỉ lệ, static vừa khít, pan giữ nguyên.
+    ("static cover wide 9:16", {"img_w": 720, "img_h": 800, "region": None, "aspect": "9:16", "duration_sec": 2, "fps": 30, "zoom": 1.12, "motion": {"mode": "static"}, "fill": "cover"}),
+    ("static cover tall 9:16", {"img_w": 720, "img_h": 1600, "region": {"x": 0, "y": 100, "w": 720, "h": 1500}, "aspect": "9:16", "duration_sec": 2, "fps": 30, "zoom": 1.12, "motion": {"mode": "static"}, "fill": "cover"}),
+    ("static cover exact 9:16", {"img_w": 720, "img_h": 1280, "region": None, "aspect": "9:16", "duration_sec": 2, "fps": 30, "zoom": 1.12, "motion": {"mode": "static"}, "fill": "cover"}),
+    ("zoom cover nearsq 9:16", {"img_w": 720, "img_h": 800, "region": None, "aspect": "9:16", "duration_sec": 2.5, "fps": 30, "zoom": 1.12, "fill": "cover"}),
+    ("pan-v cover 9:16", {"img_w": 720, "img_h": 2100, "region": None, "aspect": "9:16", "duration_sec": 4.567, "fps": 30, "zoom": 1.12, "fill": "cover"}),
 ]
 
 for label, input in CASES:
